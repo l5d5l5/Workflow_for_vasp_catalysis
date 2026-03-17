@@ -1,0 +1,148 @@
+project:
+  project_root: /data2/home/luodh/high-calc-2
+  run_root: /data2/home/luodh/high-calc-2/runs
+  templates_dir: /data2/home/luodh/high-calc-2/templates
+
+pbs:
+  queue: low
+  nodes: 1
+  ppn: 72
+  walltime: "124:00:00"
+  job_name_prefix: "high_calc"
+  template_file: "/data2/home/luodh/high-calc-2/templates/pbs_hook.sh.tpl"
+
+vasp_runtime:
+  VER: "5.4.4"
+  TYPE1: "beef"
+  TYPE2: "std"
+  OPT: "2"
+  COMPILER: "2020u2"
+
+python_runtime:
+  conda_sh: "/data2/home/luodh/anaconda3/etc/profile.d/conda.sh"
+  conda_env: "workflow"
+  python_bin:  "/data2/home/luodh/anaconda3/envs/workflow/bin/python"
+
+
+structure: "/data2/home/luodh/high-calc-2/structure"
+workflow:
+  stages:
+    bulk_relax: true
+    bulk_dos: true
+    slab_relax: true
+    slab_dos: true
+    adsorption: true
+    bulk_lobster: false
+    slab_lobster: true
+    adsorption_freq: true
+    adsorption_lobster: false
+
+lobster:
+  enabled: true
+  bin: "/data2/home/luodh/bin/lobster1"
+  success_files:
+    - "ICOHPLIST.lobster"
+  vasp_singlepoint:
+    functional: "BEEF"
+    is_metal: true
+    kpoints_density: 50
+    user_incar_settings:
+      IBRION: -1
+      NSW: 0
+      ISIF: 2
+      ISMEAR: 0
+      SIGMA: 0.05
+      LORBIT: 11
+      LWAVE: true
+      LCHARG: false
+      ISYM: 0
+    overwritedict:
+      COHPstartEnergy: -20.0
+      COHPendEnergy: 20.0
+      cohpGenerator: "from 1.2 to 1.9 orbitalwise"
+
+bulk:
+  vasp:
+    functional: "BEEF"
+    is_metal: true
+    kpoints_density: 50
+    user_incar_settings:
+      NPAR: 4
+      ISIF: 3
+      MAGMOM:
+        Co: 3.0
+        Fe: 5.0
+        Ni: 5.0
+        Mn: 5.0
+        V: 1.0
+        Ti: 1.0
+        Cr: 3.0
+
+bulk_dos:
+  vasp:
+    functional: "BEEF"
+    kpoints_density: 50
+    number_of_docs: 2001
+    user_incar_settings:
+      LORBIT: 11
+      ISMEAR: -5
+
+slab:
+  miller_list: [[1, 1, 0]]
+  slabgen:
+    vacuum_thickness: 15
+    target_layers: 5
+    fix_bottom_layers: 2
+    hcluster_cutoff: 0.25
+  vasp:
+    functional: "BEEF"
+    kpoints_density: 25
+    auto_dipole: true
+    user_incar_settings:
+      LVHAR: true
+      IDIPOL: 3
+      MAGMOM:
+        Co: 3.0
+        Fe: 5.0
+        Ni: 5.0
+        Mn: 5.0
+        V: 1.0
+        Ti: 1.0
+        Cr: 3.0
+
+slab_dos:
+  vasp:
+    functional: "BEEF"
+    kpoints_density: 60
+    number_of_docs: 2001
+    user_incar_settings:
+      LORBIT: 11
+      ISMEAR: -5
+      ENCUT: 520
+
+adsorption:
+  build:
+    mode: "site"
+    molecule_formula: "CH3"
+    site_type: "ontop"
+    site_index: 0
+    height: 1.8
+    reorient: true
+    find_args:
+      positions: ["ontop"]
+  vasp:
+    functional: "BEEF"
+    kpoints_density: 25
+
+freq:
+  vasp:
+    functional: "BEEF"
+    user_incar_settings:
+      IBRION: 5
+      POTIM: 0.015
+      NFREE: 2
+      NSW: 1
+  settings:
+    mode: "inherit"
+    adsorbate_formula: "CH3"     # 或 vibrate_indices: [...]
+    adsorbate_formula_prefer: "tail"
