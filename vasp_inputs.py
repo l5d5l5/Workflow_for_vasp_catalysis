@@ -4,6 +4,7 @@ import math
 import glob
 import warnings
 import subprocess
+import shutil
 from pathlib import Path
 from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union, Set
@@ -192,6 +193,56 @@ class VaspInputSet_ecat(VaspInputSet):
             return {key: species_map}
         return None
 
+    @classmethod
+    def _infer_functional_from_incar(cls, incar: Dict[str, Any]) -> str:
+        """从 INCAR dict 判断是 PBE 还是 BEEF（基于 _BEEF_INCAR 关键字）。"""
+        return "BEEF" if any(key in incar for key in _BEEF_INCAR) else "PBE"
+
+    @classmethod
+    def _read_and_convert_incar(
+        cls, incar_path: Union[str, Path], structure: Structure
+    ) -> Tuple[Dict[str, Any], str]:
+        """读取 INCAR，转换格式敏感参数，并返回(incar_dict, functional)."""
+        incar_path = Path(incar_path)
+        incar = Incar.from_file(incar_path).as_dict() if incar_path.exists() else {}
+        functional = cls._infer_functional_from_incar(incar)
+
+        # 格式敏感参数转换
+        FORMAT_SENSITIVE_KEYS = ["MAGMOM", "LDAUU", "LDAUJ", "LDAUL"]
+        converted_params: Dict[str, Any] = {}
+        for key in FORMAT_SENSITIVE_KEYS:
+            value = incar.get(key)
+            if value is None or isinstance(value, dict):
+                continue
+            conversion_result = cls._convert_vasp_format_to_pymatgen_dict(structure, key, value)
+            if conversion_result:
+                converted_params.update(conversion_result)
+        for key in FORMAT_SENSITIVE_KEYS:
+            incar.pop(key, None)
+        incar.update(converted_params)
+
+        return incar, functional
+
+    @classmethod
+    def _make_kpoints_from_density(
+        cls,
+        structure: Structure,
+        kpoints_density: Optional[Union[int, float, Sequence[float]]],
+        style: int = 2,
+    ) -> Optional[Kpoints]:
+        """根据 length density 生成 KPOINTS，支持单值/三元组/None。"""
+        if kpoints_density is None:
+            return None
+
+        if isinstance(kpoints_density, (int, float)):
+            densities = [float(kpoints_density)] * 3
+        elif isinstance(kpoints_density, (list, tuple)) and len(kpoints_density) == 3:
+            densities = [float(x) for x in kpoints_density]
+        else:
+            raise ValueError("kpoints_density must be a number or a sequence of 3 numbers.")
+
+        return KPOINTS.automatic_by_lengths(structure=structure, length_densities=densities, style=style)
+
 class KPOINTS:
     @classmethod
     def automatic_by_lengths(cls, structure: Structure, length_densities: Sequence[float],
@@ -205,49 +256,97 @@ class KPOINTS:
         mode = "Gamma" if style == 1 else "Monkhorst"    
         if comment is None: comment = f"{mode} Kpoint by lengths"    
         abc = structure.lattice.abc
-        num_div = tuple(math.ceil(ld / abc[idx]) for idx, ld in enumerate(length_densities))
-        
+        num_div = tuple(max(1, math.ceil(ld / abc[idx])) for idx, ld in enumerate(length_densities))
+
         return Kpoints(comment=comment, style=mode, kpts=[num_div], kpts_shift=shift)
 
-## 调用script，不同functional用不同的脚本
+## 调用脚本（run.sh / submit.pbs 等），不同 functional 使用不同的脚本模板
 class Script:
+    """使用库内或外部的脚本模板复制到目标文件夹。
+
+    设计目标：
+    - 不再硬编码绝对路径，便于在不同机器/项目中复用
+    - 允许在项目内放置脚本模板（例如 scripts/ 目录）
+    - 支持可配置的脚本来源和文件过滤（pattern）
+    """
+
+    # 默认查找脚本的根目录，建议在仓库下建立 scripts/ 目录
+    DEFAULT_SCRIPT_ROOT = Path(__file__).resolve().parent / "scripts"
 
     MODE_MAP = ["PBE", "BEEF", "PBE_NEB", "BEEF_NEB", "LOBSTER_PBE", "LOBSTER_BEEF"]
-    
-    def __init__(self, folders: Union[List[str], str], functional: str = None):
+
+    DEFAULT_SCRIPT_MAP = {
+        "PBE": "PBE",
+        "BEEF": "BF",
+        "BEEF_NEB": "BF-NEB",
+        "PBE_NEB": "PBE-NEB",
+        "LOBSTER_BEEF": "lobster/BEEF",
+        "LOBSTER_PBE": "lobster/PBE",
+    }
+
+    def __init__(
+        self,
+        folders: Union[List[str], str],
+        functional: Optional[str] = None,
+        script_root: Optional[Union[str, Path]] = None,
+        script_map: Optional[Dict[str, str]] = None,
+        patterns: Optional[List[str]] = None,
+    ):
         if isinstance(folders, (str, Path)):
             self.folders = [str(folders)]
-        elif isinstance(folders, List):
-            self.folders = [str(f) for f in folders]
         else:
-            raise TypeError("folders must be a string, Path, or list of them")
+            self.folders = [str(f) for f in folders]
+
         self.functional = functional
+        self.script_root = Path(script_root) if script_root else self.DEFAULT_SCRIPT_ROOT
+        self.script_map = script_map or self.DEFAULT_SCRIPT_MAP
+        self.patterns = patterns or ["*"]
 
     def get_script(self) -> str:
-        if self.functional is not None and self.functional not in self.MODE_MAP:
-            raise ValueError(f"functional must be one of {self.MODE_MAP}")
-        elif self.functional is None:
+        """复制脚本到目标文件夹，并返回使用的脚本源目录。"""
+        if self.functional is None:
             self.functional = self.MODE_MAP[0]
         else:
             self.functional = self.functional.upper()
 
-        script_map = {
-            "PBE": "/data2/home/luodh/script/bulk/PBE",
-            "BEEF": "/data2/home/luodh/script/bulk/BF",
-            "BEEF_NEB": "/data2/home/luodh/script/bulk/BF-NEB",
-            "PBE_NEB": "/data2/home/luodh/script/bulk/PBE-NEB",
-            "LOBSTER_BEEF": "/data2/home/luodh/script/bulk/lobster/BEEF",
-            "LOBSTER_PBE": "/data2/home/luodh/script/bulk/lobster/PBE",
-        }
-        script = script_map[self.functional]
-        files = glob.glob(f"{script}/*")
-        if not files:
-            raise FileNotFoundError(f"No files found in {script}")
+        if self.functional not in self.MODE_MAP:
+            raise ValueError(f"functional must be one of {self.MODE_MAP}")
+
+        subdir = self.script_map.get(self.functional)
+        if subdir is None:
+            raise ValueError(f"No script map configured for functional: {self.functional}")
+
+        script_dir = Path(subdir)
+        if not script_dir.is_absolute():
+            script_dir = self.script_root / script_dir
+
+        if not script_dir.exists():
+            # 尝试兼容老路径（历史写死路径）
+            legacy_root = Path("/data2/home/luodh/script")
+            legacy_dir = legacy_root / subdir
+            if legacy_dir.exists():
+                script_dir = legacy_dir
+            else:
+                raise FileNotFoundError(f"Script directory not found: {script_dir}")
+
+        # 收集要复制的文件
+        script_files = []
+        for pat in self.patterns:
+            script_files.extend(sorted(script_dir.glob(pat)))
+
+        if not script_files:
+            raise FileNotFoundError(
+                f"No files found in {script_dir} matching patterns {self.patterns}"
+            )
 
         for folder in self.folders:
-            os.makedirs(folder, exist_ok=True)
-            for f in files:
-                subprocess.run(["cp", f, folder], check=True)
+            dst_folder = Path(folder)
+            dst_folder.mkdir(parents=True, exist_ok=True)
+            for src in script_files:
+                dst = dst_folder / src.name
+                shutil.copy2(src, dst)
+
+        return str(script_dir)
 
 class MVLSlabSet_ecat(VaspInputSet_ecat, MVLSlabSet):
     """
@@ -315,11 +414,8 @@ class MVLSlabSet_ecat(VaspInputSet_ecat, MVLSlabSet):
         # 1. 读取原始 INCAR 和 CONTCAR
         incar_path = prev_dir / "INCAR"
         if not incar_path.exists():
-             raise FileNotFoundError(f"INCAR not found in prev_dir: {prev_dir}")
-             
-        base_incar = Incar.from_file(incar_path).as_dict()
-        incar = base_incar.copy()
-        
+            raise FileNotFoundError(f"INCAR not found in prev_dir: {prev_dir}")
+
         prev_contcar_path = prev_dir / "CONTCAR"
         prev_poscar_path = prev_dir / "POSCAR"
         if prev_contcar_path.exists():
@@ -327,26 +423,15 @@ class MVLSlabSet_ecat(VaspInputSet_ecat, MVLSlabSet):
         elif prev_poscar_path.exists():
             loaded_prev_structure = Structure.from_file(prev_poscar_path)
         else:
-            raise FileNotFoundError(f"Neither CONTCAR nor POSCAR found in prev_dir: {prev_dir}. Cannot proceed.") 
-        
-        # 2. 推断 Functional (用于初始化)
-        is_beef = any(key in base_incar for key in _BEEF_INCAR)
-        functional = "BEEF" if is_beef else "PBE"
-        
-        # 3. 格式敏感参数转换 (使用上一步的 CONTCAR 结构)
-        FORMAT_SENSITIVE_KEYS = ["MAGMOM", "LDAUU", "LDAUJ", "LDAUL"]
-        converted_params = {}
-        for key in FORMAT_SENSITIVE_KEYS:
-            value = incar.get(key)
-            if value is None or isinstance(value, dict): continue
-            conversion_result = cls._convert_vasp_format_to_pymatgen_dict(loaded_prev_structure, key, value)
-            if conversion_result: converted_params.update(conversion_result)
-            
-        for key in FORMAT_SENSITIVE_KEYS: incar.pop(key, None)
-        incar.update(converted_params) 
-        
-        # 4. INCAR 用户覆盖及 Slab 修正
-        if user_incar_settings: incar.update(user_incar_settings)
+            raise FileNotFoundError(f"Neither CONTCAR nor POSCAR found in prev_dir: {prev_dir}. Cannot proceed.")
+
+        # 2. 读取并转换 INCAR（自动处理MAGMOM/LDAU*等格式敏感字段）
+        base_incar, functional = cls._read_and_convert_incar(incar_path, loaded_prev_structure)
+        incar = base_incar.copy()
+
+        # 3. INCAR 用户覆盖及 Slab 修正
+        if user_incar_settings:
+            incar.update(user_incar_settings)
 
         # 5. KPOINTS 继承 (优先读取文件，其次使用用户设置)
         kpoints_path = prev_dir / "KPOINTS"
@@ -367,7 +452,7 @@ class MVLSlabSet_ecat(VaspInputSet_ecat, MVLSlabSet):
             user_kpoints_settings=kpoints,
             **extra_kwargs)  
            
-class MPMetalRelaxSet_ecat(VaspInputSet_ecat, MPMetalRelaxSet):
+class BulkRelaxSet_ecat(VaspInputSet_ecat, MPMetalRelaxSet):
     def __init__(self,
                 structure: Union[str, Structure],
                 functional: str = "PBE",
@@ -393,7 +478,7 @@ class MPMetalRelaxSet_ecat(VaspInputSet_ecat, MPMetalRelaxSet):
                 "IBRION": 2,
                 "LORBIT": 10,
                 "NSW": 500,
-                "LREAL": False,
+                "LREAL": "Auto",
             })
         if self.functional == "BEEF":
             incar.update(_BEEF_INCAR)
@@ -411,9 +496,11 @@ class MPMetalRelaxSet_ecat(VaspInputSet_ecat, MPMetalRelaxSet):
         if user_kpoints_settings:
             kpoints = user_kpoints_settings
         elif normal_kpoints_set:
-            kpoints = KPOINTS.automatic_by_lengths(
-                structure=loaded_structure, length_densities=[kpoints_density] * 3,
-                style=2)
+            kpoints = self._make_kpoints_from_density(
+                structure=loaded_structure,
+                kpoints_density=kpoints_density,
+                style=2,
+            )
             
         super().__init__(
             structure=loaded_structure,
@@ -421,6 +508,7 @@ class MPMetalRelaxSet_ecat(VaspInputSet_ecat, MPMetalRelaxSet):
             user_kpoints_settings=kpoints,
             **extra_kwargs
         )
+
 
 class MPStaticSet_ecat(VaspInputSet_ecat, MPStaticSet):
     """
@@ -499,62 +587,32 @@ class MPStaticSet_ecat(VaspInputSet_ecat, MPStaticSet):
             raise FileNotFoundError(f"CONTCAR not found in supported {prev_dir}")
         loaded_structure = Structure.from_file(structure_path)
         
-        # 读取原始INCAR文件和确定泛函
+        # 读取原始INCAR文件并转换格式敏感参数（包含 functional 推断）
         incar_path = prev_dir / "INCAR"
-        # 使用 base_incar 保存原始 INCAR，并拷贝到 incar 进行修改
-        base_incar = Incar.from_file(incar_path).as_dict() if incar_path.exists() else {}
-        
+        base_incar, functional = cls._read_and_convert_incar(incar_path, loaded_structure)
+
         # 从 base_incar 开始，应用默认设置和用户覆盖
-        incar = base_incar.copy() 
-        
+        incar = base_incar.copy()
+
         static_defaults = {
             "EDIFF": 1E-6, "NELM": 200, "IBRION": -1, "LORBIT": 11,
-            "NEDOS": 3001, "LCHARG": True, "ISMEAR": -5, 
+            "NEDOS": 3001, "LCHARG": True, "ISMEAR": -5,
             "LAECHG": True, "LELF": True, "NSW": 0, "SIGMA": 0.05,
         }
         incar.update(static_defaults)
-        
+
         if number_of_docs is not None:
             incar["NEDOS"] = int(number_of_docs)
-            
+
         if user_incar_settings:
             incar.update(user_incar_settings)
-            
-        functional = "PBE"
-        is_beef = any(key in base_incar for key in _BEEF_INCAR)
-        if is_beef:
-            functional = "BEEF"
+
+        if functional == "BEEF":
             incar.update(_BEEF_INCAR)
 
-        FORMAT_SENSITIVE_KEYS = ["MAGMOM", "LDAUU", "LDAUJ", "LDAUL"]
-        converted_params: Dict[str, Any] = {}
-
-        for key in FORMAT_SENSITIVE_KEYS:
-            value = incar.get(key)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                converted_params[key] = value
-                continue
-            conversion_result = cls._convert_vasp_format_to_pymatgen_dict(loaded_structure, key, value)
-            if conversion_result:
-                converted_params.update(conversion_result)
-            else:
-                warnings.warn(f"Failed to convert VASP format for {key}='{value}'. Keeping original value.")
-
-        for key in FORMAT_SENSITIVE_KEYS:
-            incar.pop(key, None)
-        incar.update(converted_params)
-
-        if isinstance(kpoints_density, (int, float)):
-            densities_list = [float(kpoints_density)] * 3
-        elif isinstance(kpoints_density, (tuple, list)) and len(kpoints_density) == 3:
-            densities_list = [float(x) for x in kpoints_density]
-        else:
-            raise ValueError("kpoints_density must be a single number or a sequence of 3 numbers.")
-
-        kpoints = KPOINTS.automatic_by_lengths(
-            structure=loaded_structure, length_densities=densities_list, style=2)
+        kpoints = cls._make_kpoints_from_density(
+            structure=loaded_structure, kpoints_density=kpoints_density, style=2
+        )
 
 
         return cls(
@@ -641,53 +699,24 @@ class LobsterSet_ecat(VaspInputSet_ecat, LobsterSet):
             raise FileNotFoundError(f"CONTCAR not found in supported {prev_dir}")
         loaded_structure = Structure.from_file(structure_path)
         incar_path = prev_dir / "INCAR"
-        base_incar = Incar.from_file(incar_path).as_dict() if incar_path.exists() else {}
-        incar = base_incar.copy() 
+        base_incar, functional = cls._read_and_convert_incar(incar_path, loaded_structure)
+        incar = base_incar.copy()
         lobster_defaults = {
-            "EDIFF": 1E-6, "NELM": 150, "IBRION": -1,"NCORE": 6, 
-            "LORBIT": 11, "NSW": 0,"ISMEAR": -5,"SIGMA": 0.20,     
+            "EDIFF": 1E-6, "NELM": 150, "IBRION": -1,"NCORE": 6,
+            "LORBIT": 11, "NSW": 0,"ISMEAR": -5,"SIGMA": 0.20,
         }
         incar.update(lobster_defaults)
-        
+
         if user_incar_settings:
             incar.update(user_incar_settings)
-            
-        functional = "PBE"
-        is_beef = any(key in base_incar for key in _BEEF_INCAR)
-        if is_beef:
-            functional = "BEEF"
+
+        if functional == "BEEF":
             incar.update(_BEEF_INCAR)
 
-        FORMAT_SENSITIVE_KEYS = ["MAGMOM", "LDAUU", "LDAUJ", "LDAUL"]
-        converted_params: Dict[str, Any] = {}
-        for key in FORMAT_SENSITIVE_KEYS:
-            value = incar.get(key)
-            if value is None:
-                continue
-            if isinstance(value, dict):
-                converted_params[key] = value
-                continue
-            conversion_result = cls._convert_vasp_format_to_pymatgen_dict(loaded_structure, key, value)
-            if conversion_result:
-                converted_params.update(conversion_result)
-            else:
-                warnings.warn(f"Failed to convert VASP format for {key}='{value}'. Keeping original value.")
-
-        for key in FORMAT_SENSITIVE_KEYS:
-            incar.pop(key, None)
-        incar.update(converted_params)
-
-        if isinstance(kpoints_density, (int, float)):
-            densities_list = [float(kpoints_density)] * 3
-        elif isinstance(kpoints_density, (tuple, list)) and len(kpoints_density) == 3:
-            densities_list = [float(x) for x in kpoints_density]
-        else:
-            raise ValueError("kpoints_density must be a single number or a sequence of 3 numbers.")
-
-        kpoints = KPOINTS.automatic_by_lengths(
+        kpoints = cls._make_kpoints_from_density(
             structure=loaded_structure,
-            length_densities=densities_list,
-            style=2
+            kpoints_density=kpoints_density,
+            style=2,
         )
         final_kwargs = {
             "structure": loaded_structure,
@@ -832,17 +861,10 @@ class FreqSet_ecat(MPStaticSet_ecat):
 
         kpoints = user_kpoints_settings
         if (kpoints is None) and normal_kpoints_set:
-            if kpoints_density is None:
-                densities = [40.0, 40.0, 40.0]
-            elif isinstance(kpoints_density, (int, float)):
-                densities = [float(kpoints_density)] * 3
-            else:
-                if len(kpoints_density) != 3:
-                    raise ValueError("kpoints_density must be a number or a sequence of 3 numbers.")
-                densities = [float(x) for x in kpoints_density]
-
-            kpoints = KPOINTS.automatic_by_lengths(
-                structure=loaded_structure, length_densities=densities, style=2
+            kpoints = self._make_kpoints_from_density(
+                structure=loaded_structure,
+                kpoints_density=kpoints_density,
+                style=2,
             )
 
         super().__init__(
@@ -883,7 +905,7 @@ class FreqSet_ecat(MPStaticSet_ecat):
 
         # 3) 继承 INCAR
         incar_path = prev_dir / "INCAR"
-        base_incar = Incar.from_file(incar_path).as_dict() if incar_path.exists() else {}
+        base_incar, functional = cls._read_and_convert_incar(incar_path, loaded_structure)
         incar = base_incar.copy()
 
         for k in ["IBRION", "NSW", "POTIM", "EDIFF", "EDIFFG", "ISIF", "NPAR", "NCORE"]:
@@ -903,26 +925,8 @@ class FreqSet_ecat(MPStaticSet_ecat):
         if user_incar_settings:
             incar.update(user_incar_settings)
 
-        # 4) functional 推断 + BEEF
-        is_beef = any(k in base_incar for k in _BEEF_INCAR)
-        functional = "BEEF" if is_beef else "PBE"
         if functional == "BEEF":
             incar.update(_BEEF_INCAR)
-
-        # 5) 格式敏感参数转换
-        FORMAT_SENSITIVE_KEYS = ["MAGMOM", "LDAUU", "LDAUJ", "LDAUL"]
-        converted_params: Dict[str, Any] = {}
-        for key in FORMAT_SENSITIVE_KEYS:
-            val = incar.get(key)
-            if val is None or isinstance(val, dict):
-                continue
-            res = cls._convert_vasp_format_to_pymatgen_dict(loaded_structure, key, val)
-            if res:
-                converted_params.update(res)
-
-        for key in FORMAT_SENSITIVE_KEYS:
-            incar.pop(key, None)
-        incar.update(converted_params)
 
         # 6) KPOINTS：用户优先，否则继承
         if user_kpoints_settings is not None:
@@ -1048,7 +1052,7 @@ class VaspInputMaker:
             **common_kwargs,
         }
 
-        input_obj = MPMetalRelaxSet_ecat(**input_kwargs)
+        input_obj = BulkRelaxSet_ecat(**input_kwargs)
         input_obj.write_input(output_dir)
         return str(output_dir)
 
