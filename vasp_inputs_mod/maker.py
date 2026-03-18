@@ -1,7 +1,5 @@
 """高层 API：通过配置生成不同类型的 VASP 输入。"""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union

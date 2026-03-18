@@ -1,6 +1,6 @@
+# -*- coding: utf-8 -*-
 """封装各类 VASP 输入集（基于 pymatgen VaspInputSet）。"""
 
-from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 

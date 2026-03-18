@@ -1,6 +1,5 @@
+# -*- coding: utf-8 -*-
 """常量与默认值"""
-
-from __future__ import annotations
 
 _BEEF_INCAR = {
     "GGA": "BF",

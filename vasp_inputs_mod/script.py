@@ -1,7 +1,5 @@
 """PBS/SLURM 脚本模板渲染。"""
 
-from __future__ import annotations
-
 import logging
 import os
 import shutil

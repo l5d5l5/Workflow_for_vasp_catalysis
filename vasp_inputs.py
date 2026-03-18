@@ -262,91 +262,133 @@ class KPOINTS:
 
 ## 调用脚本（run.sh / submit.pbs 等），不同 functional 使用不同的脚本模板
 class Script:
-    """使用库内或外部的脚本模板复制到目标文件夹。
-
-    设计目标：
-    - 不再硬编码绝对路径，便于在不同机器/项目中复用
-    - 允许在项目内放置脚本模板（例如 scripts/ 目录）
-    - 支持可配置的脚本来源和文件过滤（pattern）
-    """
-
-    # 默认查找脚本的根目录，建议在仓库下建立 scripts/ 目录
-    DEFAULT_SCRIPT_ROOT = Path(__file__).resolve().parent / "scripts"
-
-    MODE_MAP = ["PBE", "BEEF", "PBE_NEB", "BEEF_NEB", "LOBSTER_PBE", "LOBSTER_BEEF"]
-
-    DEFAULT_SCRIPT_MAP = {
-        "PBE": "PBE",
-        "BEEF": "BF",
-        "BEEF_NEB": "BF-NEB",
-        "PBE_NEB": "PBE-NEB",
-        "LOBSTER_BEEF": "lobster/BEEF",
-        "LOBSTER_PBE": "lobster/PBE",
-    }
-
+    
+    """通用计算脚本生成"""
     def __init__(
         self,
-        folders: Union[List[str], str],
-        functional: Optional[str] = None,
-        script_root: Optional[Union[str, Path]] = None,
-        script_map: Optional[Dict[str, str]] = None,
-        patterns: Optional[List[str]] = None,
+        template_path: Optional[Union[str, Path]] = None,
+        cluster_defaults: Optional[Dict[str, Any]] = None,
+        vdw_path: Union[str, Path] = "/data2/home/luodh/Git-workflow/Workflow_for_vasp_catalysis/scripts/vdw_kernel.bindat"
     ):
+        """
+        :param template_path: 模板文件路径
+        :param cluster_defaults: 当前超算集群的全局默认参数字典
+        :param vdw_path: vdw_kernel.bindat 在当前集群上的绝对路径
+        """
+        self.vdw_path = Path(vdw_path)
+        
+        # 1. 确定模板文件路径
+        if template_path:
+            self.template_path = Path(template_path)
+        else:
+            self.template_path = Path(__file__).resolve().parent / "scripts" / "script"
+
+        # 2. 设置集群的“全局基础参数” (Fallback)
+        self.base_context = {
+            "CORES": 72,
+            "QUEUE": "low",
+            "WALLTIME": 124,
+            "COMPILER": "2020u1",
+            "TYPE1": "org",
+            "CLEANUP_CMD": "REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR",
+            "EXTRA_CMD": ""
+        }
+        if cluster_defaults:
+            self.base_context.update(cluster_defaults)
+
+    def _build_context(self, functional: str = "PBE", is_lobster: bool = False, custom_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """内部方法：生成最终的渲染字典"""
+        context = self.base_context.copy()
+        functional = functional.upper()
+        
+        # 维度 1：处理泛函 (Functional)
+        if "BEEFVTST" in functional:
+            context["TYPE1"] = "beefvtst"
+        elif "BEEF" in functional: 
+            context["TYPE1"] = "beef"
+        elif "VTST" in functional:
+            context["TYPE1"] = "vtst"
+        else:
+            context["TYPE1"] = "org"
+            
+        # 维度 2：处理流程 (Lobster)
+        if is_lobster:
+            context["WALLTIME"] = 360
+            context["COMPILER"] = "2020u2"
+            context["CLEANUP_CMD"] = ""
+            current_cores = custom_context.get("CORES", context["CORES"]) if custom_context else context["CORES"]
+            context["EXTRA_CMD"] = f"export OMP_NUM_THREADS={current_cores}\nlobster1"
+
+        # 维度 3：用户自定义覆盖
+        if custom_context:
+            context.update(custom_context)
+            
+        return context
+
+    def _parse_folders(self, folders: Union[List[str], str, Path]) -> List[Path]:
+        """内部方法：统一将输入的 folders 转换为 Path 对象列表"""
         if isinstance(folders, (str, Path)):
-            self.folders = [str(folders)]
-        else:
-            self.folders = [str(f) for f in folders]
+            return [Path(folders)]
+        return [Path(f) for f in folders]
 
-        self.functional = functional
-        self.script_root = Path(script_root) if script_root else self.DEFAULT_SCRIPT_ROOT
-        self.script_map = script_map or self.DEFAULT_SCRIPT_MAP
-        self.patterns = patterns or ["*"]
+    def _copy_vdw_kernel(self, target_folders: List[Path]):
+        """内部方法：自动为 BEEF 泛函复制 vdw_kernel.bindat"""
+        if not self.vdw_path.exists():
+            print(f"警告: 找不到 vdw_kernel.bindat ({self.vdw_path})，VASP 将耗时自行生成。")
+            return
 
-    def get_script(self) -> str:
-        """复制脚本到目标文件夹，并返回使用的脚本源目录。"""
-        if self.functional is None:
-            self.functional = self.MODE_MAP[0]
-        else:
-            self.functional = self.functional.upper()
+        count = 0
+        for dst_folder in target_folders:
+            dst_file = dst_folder / "vdw_kernel.bindat"
+            if not dst_file.exists():
+                shutil.copy2(self.vdw_path, dst_file)
+                count += 1
+                
+        if count > 0:
+            print(f"自动将 vdw_kernel.bindat 复制到 {count} 个 BEEF 计算文件夹中！")
 
-        if self.functional not in self.MODE_MAP:
-            raise ValueError(f"functional must be one of {self.MODE_MAP}")
+    def render_script(
+        self, 
+        folders: Union[List[str], str, Path],
+        functional: str = "PBE",
+        is_lobster: bool = False,
+        output_filename: str = "script", 
+        custom_context: Optional[Dict[str, Any]] = None, 
+        make_executable: bool = True
+    ):
+        """为指定的文件夹渲染并生成 PBS 脚本，并自动处理依赖文件"""
+        if not self.template_path.exists():
+            raise FileNotFoundError(f"找不到模板文件: {self.template_path}")
 
-        subdir = self.script_map.get(self.functional)
-        if subdir is None:
-            raise ValueError(f"No script map configured for functional: {self.functional}")
+        with open(self.template_path, "r", encoding="utf-8") as f:
+            template_content = f.read()
 
-        script_dir = Path(subdir)
-        if not script_dir.is_absolute():
-            script_dir = self.script_root / script_dir
+        final_context = self._build_context(functional, is_lobster, custom_context)
+        target_folders = self._parse_folders(folders)
 
-        if not script_dir.exists():
-            # 尝试兼容老路径（历史写死路径）
-            legacy_root = Path("/data2/home/luodh/script")
-            legacy_dir = legacy_root / subdir
-            if legacy_dir.exists():
-                script_dir = legacy_dir
-            else:
-                raise FileNotFoundError(f"Script directory not found: {script_dir}")
-
-        # 收集要复制的文件
-        script_files = []
-        for pat in self.patterns:
-            script_files.extend(sorted(script_dir.glob(pat)))
-
-        if not script_files:
-            raise FileNotFoundError(
-                f"No files found in {script_dir} matching patterns {self.patterns}"
-            )
-
-        for folder in self.folders:
-            dst_folder = Path(folder)
+        # 1. 渲染并写入 PBS 脚本
+        for dst_folder in target_folders:
             dst_folder.mkdir(parents=True, exist_ok=True)
-            for src in script_files:
-                dst = dst_folder / src.name
-                shutil.copy2(src, dst)
+            
+            current_context = {"JOB_NAME": dst_folder.name}
+            current_context.update(final_context)
 
-        return str(script_dir)
+            rendered_content = template_content
+            for key, value in current_context.items():
+                rendered_content = rendered_content.replace(f"{{{{{key}}}}}", str(value))
+
+            file_path = dst_folder / output_filename
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(rendered_content)
+                
+            if make_executable:
+                os.chmod(file_path, 0o755)
+                
+        print(f"成功渲染并写入 {len(target_folders)} 个 {output_filename}！")
+
+        # 2. 核心改进：如果是 BEEF 泛函，自动触发 vdw 文件复制！
+        if "BEEF" in functional.upper():
+            self._copy_vdw_kernel(target_folders)
 
 class MVLSlabSet_ecat(VaspInputSet_ecat, MVLSlabSet):
     """

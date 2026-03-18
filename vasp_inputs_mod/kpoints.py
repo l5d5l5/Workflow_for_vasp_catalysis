@@ -1,7 +1,5 @@
 """KPOINTS生成，基于xyz的大小"""
 
-from __future__ import annotations
-
 import math
 from typing import Optional, Sequence, Union
 
