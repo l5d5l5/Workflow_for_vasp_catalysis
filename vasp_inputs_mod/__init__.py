@@ -10,7 +10,7 @@ from .input_sets import (
     SlabSetEcat,
 )
 from .maker import VaspInputMaker
-from .script import ScriptRenderer
+from .script import Script
 from .utils import (
     convert_vasp_format_to_pymatgen_dict,
     detect_adsorbate_indices,

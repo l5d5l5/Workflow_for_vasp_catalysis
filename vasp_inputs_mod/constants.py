@@ -17,6 +17,18 @@ DEFAULT_INCAR_BULK = {
     "IBRION": 2,
     "LORBIT": 10,
     "NSW": 500,
+    "ISIF": 3,
+    "LREAL": "Auto",
+}
+
+DEFAULT_INCAR_SLAB = {
+    "EDIFFG": -0.02,
+    "ENCUT": 420,
+    "POTIM": 0.20,
+    "EDIFF": 1e-4,
+    "IBRION": 2,
+    "ISIF": 2,
+    "NSW": 500,
     "LREAL": "Auto",
 }
 
@@ -29,6 +41,7 @@ DEFAULT_INCAR_STATIC = {
     "LAECHG": True,
     "LELF": True,
     "NSW": 0,
+    "ISIF": 0,
     "LORBIT": 11,
     "ISMEAR": -5,
     "SIGMA": 0.05,

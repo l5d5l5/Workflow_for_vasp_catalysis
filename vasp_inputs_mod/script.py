@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Union
 logger = logging.getLogger(__name__)
 
 class Script:
-    
     """通用计算脚本生成"""
+    
     def __init__(
         self,
         template_path: Optional[Union[str, Path]] = None,
@@ -37,13 +37,19 @@ class Script:
             "WALLTIME": 124,
             "COMPILER": "2020u1",
             "TYPE1": "org",
-            "CLEANUP_CMD": "REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR",
+            "CLEANUP_CMD": "rm REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR",
             "EXTRA_CMD": ""
         }
         if cluster_defaults:
             self.base_context.update(cluster_defaults)
 
-    def _build_context(self, functional: str = "PBE", is_lobster: bool = False, custom_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _build_context(
+        self, 
+        functional: str = "PBE", 
+        is_lobster: bool = False, 
+        is_static: bool = False,
+        custom_context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """内部方法：生成最终的渲染字典"""
         context = self.base_context.copy()
         functional = functional.upper()
@@ -58,13 +64,16 @@ class Script:
         else:
             context["TYPE1"] = "org"
             
-        # 维度 2：处理流程 (Lobster)
+        # 维度 2：处理流程 (Lobster / Static)
         if is_lobster:
             context["WALLTIME"] = 360
             context["COMPILER"] = "2020u2"
-            context["CLEANUP_CMD"] = ""
+            context["CLEANUP_CMD"] = ""  # Lobster 强依赖波函数等文件，不能删
             current_cores = custom_context.get("CORES", context["CORES"]) if custom_context else context["CORES"]
             context["EXTRA_CMD"] = f"export OMP_NUM_THREADS={current_cores}\nlobster1"
+        elif is_static:
+            # 单点计算 (Static/NoSCF) 需要保留电子结构性质文件 (DOSCAR, WAVECAR, CHGCAR 等)
+            context["CLEANUP_CMD"] = ""
 
         # 维度 3：用户自定义覆盖
         if custom_context:
@@ -100,6 +109,7 @@ class Script:
         folders: Union[List[str], str, Path],
         functional: str = "PBE",
         is_lobster: bool = False,
+        is_static: bool = False,
         output_filename: str = "script", 
         custom_context: Optional[Dict[str, Any]] = None, 
         make_executable: bool = True
@@ -111,7 +121,8 @@ class Script:
         with open(self.template_path, "r", encoding="utf-8") as f:
             template_content = f.read()
 
-        final_context = self._build_context(functional, is_lobster, custom_context)
+        # 传入 is_static 参数
+        final_context = self._build_context(functional, is_lobster, is_static, custom_context)
         target_folders = self._parse_folders(folders)
 
         # 1. 渲染并写入 PBS 脚本
@@ -138,7 +149,4 @@ class Script:
         if "BEEF" in functional.upper():
             self._copy_vdw_kernel(target_folders)
         return [str(p / output_filename) for p in target_folders]
-
-
-# Backward compatibility
-ScriptRenderer = Script
+    

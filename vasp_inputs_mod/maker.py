@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from pymatgen.core import Structure
+from pymatgen.io.lobster import Lobsterin
 
 from .input_sets import (
     BulkRelaxSetEcat,
@@ -27,39 +28,24 @@ class VaspInputMaker:
 
     name: str = "VaspInputMaker"
     functional: str = "PBE"
+    kpoints_density: float = 50.0
+    use_default_incar: bool = True
+    use_default_kpoints: bool = True
+    
+    # 全局默认设置 (Baseline)
     user_incar_settings: Dict[str, Any] = field(default_factory=dict)
     user_kpoints_settings: Any = None
-    user_potcar_functional: Any = "PBE_54"
-    use_default_incar: bool = True
+    
+    user_potcar_functional: str = "PBE_54"
     extra_kwargs: Dict[str, Any] = field(default_factory=dict)
-
-    structure: Union[str, Structure, None] = None
-    is_metal: bool = False
-    use_default_kpoints: bool = True
-    auto_dipole: bool = False
-
-    # NEB
-    start_structure: Union[str, Structure, None] = None
-    end_structure: Union[str, Structure, None] = None
-    intermediate_structures: List[Structure] = field(default_factory=list)
-    n_images: int = 6
-
-    # NoSCF/Lobster
-    number_of_docs: Optional[int] = None
-    isym: int = 0
-    ismear: int = -5
-    kpoints_density: float = 50
-    reciprocal_density: Optional[int] = None
-    user_supplied_basis: Optional[dict] = None
-    overwritedict: Dict[str, Any] = field(default_factory=dict)
-    prev_dir: Union[str, Path, None] = None
 
     @classmethod
     def from_dict_ecat(cls, config: Dict[str, Any], **kwargs):
+        """从字典安全地初始化 Maker，未知的键会被放入 extra_kwargs。"""
         full_config = {**config, **kwargs}
-        class_fields = {f.name.strip() for f in fields(cls)}
-        main_params: Dict[str, Any] = {}
-        extra_params: Dict[str, Any] = full_config.pop("extra_kwargs", {})
+        class_fields = {f.name for f in fields(cls)}
+        main_params = {}
+        extra_params = full_config.pop("extra_kwargs", {})
 
         for k, v in full_config.items():
             key_clean = k.strip()
@@ -71,101 +57,118 @@ class VaspInputMaker:
         return cls(**main_params, extra_kwargs=extra_params)
 
     def __post_init__(self):
-        # Ensure functional normalization and prevent accidental mutable shared state
         self.functional = (self.functional or "PBE").upper()
         self.user_incar_settings = dict(self.user_incar_settings or {})
         self.extra_kwargs = dict(self.extra_kwargs or {})
-
-    def _get_final_structure(self, structure_override: Union[str, Structure, None]) -> Structure:
-        struct_source = structure_override if structure_override is not None else self.structure
-        if struct_source is None:
-            raise ValueError("Structure is required for this calculation.")
-        return load_structure(struct_source)
 
     def _ensure_dir(self, output_dir: Union[str, Path]) -> Path:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         return output_dir
 
-    def _resolve_prev_dir(self, prev_dir: Optional[Union[str, Path]] = None) -> Optional[Path]:
-        if prev_dir is None:
-            prev_dir = self.prev_dir
-        if prev_dir is None:
-            return None
-        return Path(prev_dir).resolve()
+    def _build_common_kwargs(
+        self, 
+        local_incar: Optional[Dict[str, Any]] = None, 
+        local_kpoints: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """提取通用参数，并执行 局部配置 对 全局配置 的覆盖合并。
 
-    def _build_common_kwargs(self, structure: Structure) -> Dict[str, Any]:
-        return {
-            "structure": structure,
-            "functional": self.functional,
-            "use_default_incar": self.use_default_incar,
-            "user_incar_settings": self.user_incar_settings,
-            "user_kpoints_settings": self.user_kpoints_settings,
-            "user_potcar_functional": self.user_potcar_functional,
-            **self.extra_kwargs,
-        }
+        注意：functional 由各个 write_* 方法明确传递，避免与 prev_calc 模式之间产生冲突。
+        """
+        # INCAR 合并策略：字典 Update，局部覆盖全局
+        merged_incar = self.user_incar_settings.copy()
+        if local_incar:
+            merged_incar.update(local_incar)
 
-    def write_bulk(self, output_dir: Union[str, Path], structure: Union[str, Structure, None] = None) -> str:
-        final_structure = self._get_final_structure(structure)
+        # KPOINTS 合并策略：直接替换，局部存在则完全无视全局
+        merged_kpoints = local_kpoints if local_kpoints is not None else self.user_kpoints_settings
+
+        common_kwargs = dict(self.extra_kwargs or {})
+        common_kwargs.update(
+            {
+                "use_default_incar": self.use_default_incar,
+                "user_incar_settings": merged_incar,
+                "user_kpoints_settings": merged_kpoints,
+                "user_potcar_functional": self.user_potcar_functional,
+            }
+        )
+        return common_kwargs
+
+    # =========================================================================
+    # 任务生成方法 (Task Generation Methods)
+    # =========================================================================
+
+    def write_bulk(
+        self, 
+        structure: Union[str, Structure, Path], 
+        output_dir: Union[str, Path], 
+        is_metal: bool = False,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+    ) -> str:
         output_dir = self._ensure_dir(output_dir)
-
-        common_kwargs = self._build_common_kwargs(final_structure)
-        input_kwargs = {
-            "kpoints_density": self.kpoints_density,
-            "is_metal": self.is_metal,
-            "use_default_kpoints": self.use_default_kpoints,
-            **common_kwargs,
-        }
-
-        input_obj = BulkRelaxSetEcat(**input_kwargs)
+        input_obj = BulkRelaxSetEcat(
+            functional=self.functional,
+            structure=load_structure(structure),
+            kpoints_density=self.kpoints_density,
+            use_default_kpoints=self.use_default_kpoints,
+            is_metal=is_metal,
+            **self._build_common_kwargs(user_incar_settings, user_kpoints_settings),
+        )
         input_obj.write_input(output_dir)
         return str(output_dir)
 
-    def write_slab(self, output_dir: Union[str, Path], structure: Union[str, Structure, None] = None) -> str:
-        final_structure = self._get_final_structure(structure)
+    def write_slab(
+        self, 
+        structure: Union[str, Structure, Path], 
+        output_dir: Union[str, Path], 
+        auto_dipole: bool = True,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+    ) -> str:
         output_dir = self._ensure_dir(output_dir)
-
-        common_kwargs = self._build_common_kwargs(final_structure)
-        input_kwargs = {
-            "kpoints_density": self.kpoints_density,
-            "use_default_kpoints": self.use_default_kpoints,
-            "auto_dipole": self.auto_dipole,
-            **common_kwargs,
-        }
-
-        input_obj = SlabSetEcat(**input_kwargs)
+        input_obj = SlabSetEcat(
+            functional=self.functional,
+            structure=load_structure(structure),
+            kpoints_density=self.kpoints_density,
+            use_default_kpoints=self.use_default_kpoints,
+            auto_dipole=auto_dipole,
+            **self._build_common_kwargs(user_incar_settings, user_kpoints_settings),
+        )
         input_obj.write_input(output_dir)
         return str(output_dir)
 
     def write_noscf(
         self,
         output_dir: Union[str, Path],
-        structure: Union[str, Structure, None] = None,
+        structure: Union[str, Structure, Path, None] = None,
         prev_dir: Optional[Union[str, Path]] = None,
+        number_of_docs: Optional[int] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
     ) -> str:
         output_dir = self._ensure_dir(output_dir)
-        prev_dir_path = self._resolve_prev_dir(prev_dir)
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
 
-        if prev_dir_path is not None:
+        if prev_dir is not None:
+            # 对于 prev_dir 情况，functional 应由 prev INCAR 决定，
+            # 且不应将 maker 的 functional/extra_kwargs 作为额外参数传入。
             input_set = MPStaticSetEcat.from_prev_calc_ecat(
-                prev_dir=prev_dir_path,
+                prev_dir=Path(prev_dir).resolve(),
                 kpoints_density=self.kpoints_density,
-                number_of_docs=self.number_of_docs,
-                user_incar_settings=self.user_incar_settings,
-                **self.extra_kwargs,
+                number_of_docs=number_of_docs,
+                user_incar_settings=common_kwargs.get("user_incar_settings"),
+                user_kpoints_settings=common_kwargs.get("user_kpoints_settings"),
             )
         else:
-            final_structure = self._get_final_structure(structure)
+            if structure is None:
+                raise ValueError("Must provide either 'structure' or 'prev_dir' for NoSCF.")
             input_set = MPStaticSetEcat(
-                structure=final_structure,
                 functional=self.functional,
-                use_default_incar=self.use_default_incar,
+                structure=load_structure(structure),
                 use_default_kpoints=self.use_default_kpoints,
-                number_of_docs=self.number_of_docs,
-                user_incar_settings=self.user_incar_settings,
-                user_kpoints_settings=self.user_kpoints_settings,
-                user_potcar_functional=self.user_potcar_functional,
-                **self.extra_kwargs,
+                number_of_docs=number_of_docs,
+                **common_kwargs,
             )
 
         input_set.write_input(output_dir)
@@ -174,99 +177,107 @@ class VaspInputMaker:
     def write_neb(
         self,
         output_dir: Union[str, Path],
-        start_structure: Union[str, Structure, None] = None,
-        end_structure: Union[str, Structure, None] = None,
+        start_structure: Union[str, Structure, Path],
+        end_structure: Union[str, Structure, Path],
+        n_images: int = 6,
+        use_idpp: bool = True,
         intermediate_structures: Optional[List[Structure]] = None,
-        n_images: Optional[int] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
     ) -> str:
-        output_dir = Path(output_dir).resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = self._ensure_dir(output_dir)
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
 
-        final_start = self._get_final_structure(
-            start_structure if start_structure is not None else self.start_structure
-        )
-        final_end = self._get_final_structure(
-            end_structure if end_structure is not None else self.end_structure
-        )
+        is_start_dir = isinstance(start_structure, (str, Path)) and Path(start_structure).is_dir()
+        is_end_dir = isinstance(end_structure, (str, Path)) and Path(end_structure).is_dir()
 
-        input_obj = NEBSetEcat(
-            start_structure=final_start,
-            end_structure=final_end,
-            n_images=int(n_images) if n_images is not None else int(self.n_images),
-            intermediate_structures=intermediate_structures if intermediate_structures is not None else self.intermediate_structures,
-            functional=self.functional.upper(),
-            use_default_incar=self.use_default_incar,
-            user_incar_settings=self.user_incar_settings,
-            user_kpoints_settings=self.user_kpoints_settings,
-            user_potcar_functional=self.user_potcar_functional,
-            **self.extra_kwargs,
-        )
-
+        if is_start_dir or is_end_dir:
+            prev_dir = start_structure if is_start_dir else end_structure                 
+            input_obj = NEBSetEcat.from_prev_calc(
+                prev_dir=prev_dir,
+                start_structure=start_structure,
+                end_structure=end_structure,
+                n_images=n_images,
+                use_idpp=use_idpp,
+                **common_kwargs
+            )
+        else:
+            input_obj = NEBSetEcat(
+                start_structure=start_structure,
+                end_structure=end_structure,
+                n_images=n_images,
+                use_idpp=use_idpp,
+                intermediate_structures=intermediate_structures,
+                **common_kwargs
+            )            
         input_obj.write_input(output_dir)
         return str(output_dir)
 
     def write_lobster(
         self,
         output_dir: Union[str, Path],
-        structure: Union[str, Structure, None] = None,
+        structure: Union[str, Structure, Path, None] = None,
         prev_dir: Optional[Union[str, Path]] = None,
+        isym: int = 0,
+        ismear: int = -5,
+        reciprocal_density: Optional[int] = None,
+        user_supplied_basis: Optional[dict] = None,
+        overwritedict: Optional[Dict[str, Any]] = None,
+        custom_lobsterin_lines: Optional[List[str]] = None, 
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
     ) -> str:
         output_dir = self._ensure_dir(output_dir)
-        prev_dir_path = self._resolve_prev_dir(prev_dir)
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
 
-        if prev_dir_path is not None:
+        if prev_dir is not None:
             input_set = LobsterSetEcat.from_prev_calc_ecat(
-                prev_dir=prev_dir_path,
+                prev_dir=Path(prev_dir).resolve(),
                 kpoints_density=self.kpoints_density,
-                user_incar_settings=self.user_incar_settings,
-                user_supplied_basis=self.user_supplied_basis,
-                **self.extra_kwargs,
+                isym=isym,
+                ismear=ismear,                
+                reciprocal_density=reciprocal_density,
+                user_supplied_basis=user_supplied_basis,
+                **common_kwargs,
             )
         else:
+            if structure is None:
+                raise ValueError("Must provide either 'structure' or 'prev_dir' for Lobster.")
             input_set = LobsterSetEcat(
-                structure=self._get_final_structure(structure),
-                functional=self.functional,
-                isym=self.isym,
-                ismear=self.ismear,
-                reciprocal_density=self.reciprocal_density,
-                user_supplied_basis=self.user_supplied_basis,
-                use_default_incar=self.use_default_incar,
-                user_incar_settings=self.user_incar_settings,
-                user_kpoints_settings=self.user_kpoints_settings,
-                user_potcar_functional=self.user_potcar_functional,
-                **self.extra_kwargs,
+                structure=load_structure(structure),
+                isym=isym,
+                ismear=ismear,
+                reciprocal_density=reciprocal_density,
+                user_supplied_basis=user_supplied_basis,
+                **common_kwargs,
             )
 
-        input_set.write_input(output_dir)
-
-        lb = LobsterSetEcat.standard_calculations_from_vasp_files(
-            POSCAR_input=output_dir / "POSCAR",
-            INCAR_input=output_dir / "INCAR",
-            POTCAR_input=output_dir / "POTCAR",
+        input_set.write_input(
+            output_dir, 
+            overwritedict=overwritedict,
+            custom_lobsterin_lines=custom_lobsterin_lines
         )
-        lb.write_lobsterin(output_dir / "lobsterin", overwritedict=self.overwritedict)
         return str(output_dir)
 
     def write_adsorption(
         self,
         output_dir: Union[str, Path],
-        structure: Union[str, Structure],
+        structure: Union[str, Structure, Path],
         prev_dir: Union[str, Path],
+        auto_dipole: bool = True,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
     ) -> str:
-        output_dir = Path(output_dir).resolve()
-        if prev_dir is None and self.prev_dir is not None:
-            prev_dir = self.prev_dir
+        output_dir = self._ensure_dir(output_dir)
         prev_dir_path = Path(prev_dir).resolve()
-        output_dir.mkdir(parents=True, exist_ok=True)
-
+        # Slab adsorbate 从 prev calc 继承 functional，因此需要避免将 Maker 的 functional 传入。
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
+        common_kwargs.pop("functional", None)
         input_set = SlabSetEcat.ads_from_prev_calc(
-            structure=structure,
+            structure=load_structure(structure),
             prev_dir=prev_dir_path,
-            user_incar_settings=self.user_incar_settings,
-            user_kpoints_settings=self.user_kpoints_settings,
-            auto_dipole=self.auto_dipole,
-            user_potcar_functional=self.user_potcar_functional,
-            **self.extra_kwargs,
+            auto_dipole=auto_dipole,
+            **common_kwargs
         )
         input_set.write_input(output_dir)
         return str(output_dir)
@@ -274,20 +285,23 @@ class VaspInputMaker:
     def write_freq(
         self,
         output_dir: Union[str, Path],
-        prev_dir: Optional[Union[str, Path]] = None,
-        structure: Union[str, Structure, None] = None,
+        prev_dir: Union[str, Path],
+        structure: Union[str, Structure, Path, None] = None,
         mode: str = "inherit",
         vibrate_indices: Optional[List[int]] = None,
         adsorbate_formula: Optional[str] = None,
         adsorbate_formula_prefer: str = "tail",
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
     ) -> str:
         output_dir = self._ensure_dir(output_dir)
-        prev_dir_path = self._resolve_prev_dir(prev_dir)
-        if prev_dir_path is None:
-            raise ValueError("Frequency calculation requires 'prev_dir' (needs CONTCAR/INCAR/KPOINTS).")
+        prev_dir_path = Path(prev_dir).resolve()
 
         if structure is not None:
-            final_structure = self._get_final_structure(structure)
+            if isinstance(structure, Structure):
+                final_structure = structure.copy()
+            else:
+                final_structure = Structure.from_file(structure)
         else:
             contcar_path = prev_dir_path / "CONTCAR"
             if not contcar_path.exists():
@@ -295,54 +309,37 @@ class VaspInputMaker:
             final_structure = Structure.from_file(contcar_path)
 
         final_vibrate_indices: Optional[List[int]] = None
-        inherit_sd = False
 
         if vibrate_indices is not None:
             final_vibrate_indices = vibrate_indices
-            inherit_sd = False
         elif adsorbate_formula is not None:
             final_vibrate_indices = pick_adsorbate_indices_by_formula_strict(
                 final_structure,
                 adsorbate_formula=adsorbate_formula,
                 prefer=adsorbate_formula_prefer,
             )
-            inherit_sd = False
-            logger.info(
-                "Picked vibrate indices by formula %s: %s",
-                adsorbate_formula,
-                final_vibrate_indices,
-            )
-        else:
-            if mode == "all":
-                final_vibrate_indices = list(range(len(final_structure)))
-                inherit_sd = False
-            elif mode == "inherit":
-                sd = final_structure.site_properties.get("selective_dynamics")
-                has_sd = isinstance(sd, list) and len(sd) == len(final_structure)
-                if not has_sd:
-                    raise ValueError(
-                        "mode='inherit' requires selective_dynamics in CONTCAR, but none was found. "
-                        "Provide vibrate_indices explicitly, or provide adsorbate_formula (non-ambiguous), "
-                        "or switch to mode='all'."
-                    )
-                final_vibrate_indices = None
-                inherit_sd = True
-            elif mode == "adsorbate":
-                raise ValueError(
-                    "mode='adsorbate' auto-detect is disabled in strict mode. "
-                    "Provide adsorbate_formula (preferred) or vibrate_indices (best)."
+            logger.info("Picked vibrate indices by formula %s: %s", adsorbate_formula, final_vibrate_indices)
+        elif mode == "all":
+            #所有原子都参与震动
+            if "selective_dynamics" in final_structure.site_properties:
+                final_structure.remove_site_property("selective_dynamics")
+        elif mode == "inherit":
+            #直接继承结构优化后的原子,没有设定固定进行提醒即可
+            logger.warning(
+                    "mode='inherit' is set, no fix atoms set"
+                    "If this is unintended, ignore "
                 )
-            else:
-                raise ValueError("mode must be one of: 'inherit', 'all', 'adsorbate'.")
+        else:
+            raise ValueError("mode must be one of: 'inherit', 'all', 'adsorbate'.")
+
+        # 使用 prev_dir 生成频率计算时，functional 应从 prev INCAR 确定，避免冲突
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
 
         input_set = FreqSetEcat.from_prev_calc_ecat(
             prev_dir=prev_dir_path,
             structure=final_structure,
             vibrate_indices=final_vibrate_indices,
-            inherit_sd=inherit_sd,
-            user_incar_settings=getattr(self, "user_incar_settings", None),
-            user_kpoints_settings=getattr(self, "user_kpoints_settings", None),
-            **getattr(self, "extra_kwargs", {}),
+            **common_kwargs
         )
         input_set.write_input(output_dir)
         return str(output_dir)
