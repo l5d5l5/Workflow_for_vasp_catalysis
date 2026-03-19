@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """常量与默认值"""
+from pathlib import Path
 
 _BEEF_INCAR = {
     "GGA": "BF",
@@ -98,3 +99,38 @@ DEFAULT_INCAR_DIMER = {
     "NSW": 1000,
     "LREAL": "Auto",
 }
+
+DEFAULT_INCAR_NBO = {
+    "NSW": 0,          
+    "IBRION": -1,      
+    "LNBO": True,      
+    "LWAVE": True,     
+    "LCHARG": True,    
+}
+
+DEFAULT_NBO_CONFIG_PARAMS = {
+    "occ_1c": "1.60",
+    "occ_2c": "1.85",
+    "print_cube": "F",
+    "density": "F",
+    "vis_start": "0",
+    "vis_end": "-1",
+    "mesh_x": "0", "mesh_y": "0", "mesh_z": "0",
+    "box_x": "1", "box_y": "1", "box_z": "1",
+    "origin_fact": "0.00"
+}
+
+NBO_CONFIG_TEMPLATE = """#####NBO search parameters####
+  {occ_1c}   #Occupancy cutoff for one-center NBOs
+  {occ_2c}   #Occupancy cutoff for two-center NBOs
+#####Visualization output control parameters####
+     {print_cube}   #Control over printing of .cube files for visualization.
+     {density}   #density - Whether density (T) or wavefunctions (F) are visualized.
+  {vis_start} {vis_end}   #vis_start vis_end - Start and end of NBOs to print .cube files for
+{mesh_x} {mesh_y} {mesh_z}   #mesh - Number of points along each lattice vectors to use in .cube files
+{box_x} {box_y} {box_z}   #box_int - Number of unit cell to use for .cube file. See READ_ME.txt for guidance
+  {origin_fact}   #origin_fact - Shift of the origin for .cube file. See READ_ME.txt for guidance
+"""
+
+MODULE_DIR = Path(__file__).resolve().parent
+NBO_BASIS_PATH = MODULE_DIR / "basis" / "basis-ANO-RCC-MB.txt"

@@ -1,0 +1,37 @@
+#!/bin/bash
+#PBS -N node1 
+#PBS -l nodes=1:ppn=72:c72
+#PBS -l walltime=360:00:00
+#PBS -j oe
+ulimit -s unlimited
+
+
+# parameters
+VER=5.4.4-allbak    # version option   : 5.4.1 5.4.4
+TYPE2=std   # type2 option     : std gam ncl gpu (for gpu, use 5.4.4)
+#OPT=3    # optimization option: 2 3 (2 stable; 3 slightly faster than 2) 
+VASPHOME=/data/home/lill/software
+LOG_FILE=run.log                              # name of the log file
+#COMPILER=2020u2
+cd $PBS_O_WORKDIR
+#module unload intel
+if [ $COMPILER == 2022.0.2 ] ; then
+    module load mkl/2022.0.2
+    module load mpi/2021.5.1
+else
+    module load mpi/$COMPILER
+    module load intel/$COMPILER
+fi
+#
+mpirun $VASPHOME/vasp.$VER/bin/vasp_$TYPE2 > $LOG_FILE 2>&1
+#
+#$VASPHOME$VER/vasp.$VER\_$TYPE1\_O$OPT/bin/vasp_$TYPE2 > $LOG_FILE 2>&1
+rm REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR NODEIB
+export OMP_NUM_THREADS=`nproc`
+export OMP_STACKSIZE=10GB
+projection.exe basis.inp wavefunction.dat NBO.out >> $LOG_FILE 2>&1
+nbo.exe NBO.out nbo.chk >> $LOG_FILE 2>&1
+echo "run complete on `hostname`: `date` `pwd`" >> ~/job.log
+
+
+

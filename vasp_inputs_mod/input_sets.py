@@ -29,6 +29,10 @@ from .constants import (
     DEFAULT_INCAR_SLAB,
     DEFAULT_INCAR_STATIC,
     DEFAULT_INCAR_DIMER,
+    DEFAULT_INCAR_NBO,
+    DEFAULT_NBO_CONFIG_PARAMS,
+    NBO_CONFIG_TEMPLATE,
+    NBO_BASIS_PATH,
     _BEEF_INCAR,
 )
 from .kpoints import build_kpoints_by_lengths
@@ -868,3 +872,154 @@ class DimerSetEcat(MPStaticSetEcat):
         )
             
         return cls(**init_kwargs)
+    
+class NBOSetEcat(MPStaticSetEcat):
+    """
+    用于 VASP-NBO 计算的输入文件生成器。
+    支持自动解析全局基组文件，生成严格符合 Fortran 格式的 nbo.config。
+    """
+
+    def __init__(
+        self,
+        structure: Union[str, Structure, Path],
+        basis_source: Union[str, Path, Dict[str, str], None] = None,
+        nbo_config: Optional[Dict[str, Any]] = None,
+        prev_dir: Optional[Union[str, Path]] = None,
+        **kwargs,
+    ):
+        # 1. 初始化 NBO 专属参数
+        self.nbo_config_params = {**DEFAULT_NBO_CONFIG_PARAMS, **(nbo_config or {})}
+        self.prev_dir = Path(prev_dir).resolve() if prev_dir else None
+
+        loaded_structure = self._load_structure(structure)
+
+        # 2. 解析基组
+        if basis_source is None:
+            basis_source = NBO_BASIS_PATH
+            logger.info(f"Using default basis set from: {basis_source}")
+
+        if isinstance(basis_source, dict):
+            self.basis_settings = basis_source
+        else:
+            logger.info("Parsing master basis set file/string...")
+            self.basis_settings = self._parse_basis_file(basis_source)
+
+        elements_in_struct = {str(el) for el in loaded_structure.composition.elements}
+        missing_elements = elements_in_struct - set(self.basis_settings.keys())
+        if missing_elements:
+            raise ValueError(
+                f"CRITICAL: Missing basis set definitions for elements: {missing_elements}. "
+            )
+
+        # 3. 纯粹地调用父类初始化
+        super().__init__(structure=loaded_structure, **kwargs)
+
+    @classmethod
+    def from_prev_calc(
+        cls,
+        prev_dir: Union[str, Path],
+        basis_source: Union[str, Path, Dict[str, str], None] = None,
+        nbo_config: Optional[Dict[str, Any]] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        """
+        从前一步计算（如静态计算或优化）继承参数，生成 NBO 计算任务。
+        """
+        prev_dir = Path(prev_dir).resolve()
+        loaded_structure = cls._load_structure(prev_dir)
+        incar_path = prev_dir / "INCAR"
+        
+        # 1. 继承并修改 INCAR
+        if not incar_path.exists():
+            raise FileNotFoundError(f"INCAR not found in {prev_dir}")
+            
+        # 读取旧 INCAR 和泛函
+        base_incar, functional = cls._read_and_convert_incar(incar_path, loaded_structure)
+        
+        incar = cls._build_incar(
+            functional,
+            base_incar,
+            extra_incar=DEFAULT_INCAR_NBO,
+            user_incar_settings=user_incar_settings
+        )
+        
+        # 2. 继承 KPOINTS
+        kpoints = user_kpoints_settings
+        if kpoints is None:
+            try:
+                kpoints = Kpoints.from_file(prev_dir / "KPOINTS")
+                logger.info(f"Inheriting KPOINTS from {prev_dir}")
+            except FileNotFoundError:
+                logger.warning(f"KPOINTS not found in {prev_dir}, will generate default.")
+                kpoints = None
+
+        init_kwargs = extra_kwargs.copy()
+        init_kwargs.update(
+            {
+                "structure": loaded_structure,
+                "functional": functional,
+                "basis_source": basis_source,
+                "nbo_config": nbo_config,
+                "prev_dir": prev_dir,
+                "use_default_incar": False,    
+                "use_default_kpoints": False,
+                "user_incar_settings": incar,  
+                "user_kpoints_settings": kpoints,
+            }
+        )
+            
+        return cls(**init_kwargs)
+
+    def write_input(self, output_dir: Union[str, Path], **kwargs):
+        """写入 VASP 输入文件、NBO 专属文件，并拷贝波函数"""
+        super().write_input(output_dir, **kwargs)
+        output_dir = Path(output_dir).resolve()
+        
+        self._write_nbo_config(output_dir / "nbo.config")
+        self._write_basis_inp(output_dir / "basis.inp")
+        
+        logger.info(f"NBO specific input files written to {output_dir}")
+
+    @staticmethod
+    def _parse_basis_file(source: Union[str, Path]) -> Dict[str, str]:
+        basis_dict = {}
+        if isinstance(source, Path) or (isinstance(source, str) and Path(source).is_file()):
+            with open(source, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+        else:
+            lines = source.splitlines()
+
+        current_element = None
+        current_basis = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('!'):
+                continue
+            if stripped == '****':
+                if current_element:
+                    basis_dict[current_element] = '\n'.join(current_basis)
+                    current_element = None
+                    current_basis = []
+                continue
+            parts = stripped.split()
+            if len(parts) == 2 and parts[0].isalpha() and parts[1] == '0' and current_element is None:
+                current_element = parts[0].capitalize()
+            elif current_element:
+                current_basis.append(line.rstrip())
+
+        return basis_dict
+
+    def _write_nbo_config(self, filepath: Path):
+        with open(filepath, "w") as f:
+            f.write(NBO_CONFIG_TEMPLATE.format(**self.nbo_config_params))
+
+    def _write_basis_inp(self, filepath: Path):
+        elements_in_struct = [str(el) for el in self.structure.composition.elements]
+        with open(filepath, "w") as f:
+            for el in elements_in_struct:
+                f.write(f"{el}     0\n")
+                f.write(self.basis_settings[el] + "\n")
+                f.write("****\n")

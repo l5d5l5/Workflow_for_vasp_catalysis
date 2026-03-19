@@ -16,6 +16,7 @@ from .input_sets import (
     NEBSetEcat,
     SlabSetEcat,
     DimerSetEcat,
+    NBOSetEcat,
 )
 import logging
 
@@ -377,6 +378,57 @@ class VaspInputMaker:
                 **common_kwargs
             )
         input_set.write_input(output_dir)
+        return str(output_dir)
+    
+    def write_nbo(
+        self,
+        output_dir: Union[str, Path],
+        basis_source: Union[str, Path, Dict[str, str], None] = None,
+        prev_dir: Optional[Union[str, Path]] = None,
+        structure: Union[str, Structure, Path, None] = None,
+        nbo_config: Optional[Dict[str, Any]] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+    ) -> str:
+        
+        output_dir = self._ensure_dir(output_dir)
+
+        if structure is not None:
+            if isinstance(structure, Structure):
+                final_structure = structure.copy()
+            else:
+                final_structure = Structure.from_file(structure)
+        elif prev_dir is not None:
+            prev_dir_path = Path(prev_dir).resolve()
+            contcar_path = prev_dir_path / "CONTCAR"
+            if not contcar_path.exists():
+                raise FileNotFoundError(f"CONTCAR not found in {prev_dir_path}")
+            final_structure = Structure.from_file(contcar_path)
+        else:
+            raise ValueError("Must provide either 'structure' or 'prev_dir' to generate NBO input.")
+
+        logger.info("Generating NBO pure input files...")
+        
+        if prev_dir is not None:
+            input_set = NBOSetEcat.from_prev_calc(
+                prev_dir=prev_dir,
+                basis_source=basis_source,
+                nbo_config=nbo_config,
+                user_incar_settings=user_incar_settings,
+                user_kpoints_settings=user_kpoints_settings,
+                structure=final_structure
+            )
+        else:
+            common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
+            input_set = NBOSetEcat(
+                structure=final_structure,
+                basis_source=basis_source,
+                nbo_config=nbo_config,
+                **common_kwargs
+            )
+        
+        input_set.write_input(output_dir)
+        
         return str(output_dir)
 
         

@@ -48,6 +48,7 @@ class Script:
         functional: str = "PBE", 
         is_lobster: bool = False, 
         is_static: bool = False,
+        is_nbo: bool = False,
         custom_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """内部方法：生成最终的渲染字典"""
@@ -74,7 +75,16 @@ class Script:
         elif is_static:
             # 单点计算 (Static/NoSCF) 需要保留电子结构性质文件 (DOSCAR, WAVECAR, CHGCAR 等)
             context["CLEANUP_CMD"] = ""
-
+        elif is_nbo:
+            context["CLEANUP_CMD"] = ""  # Lobster 强依赖波函数等文件，不能删
+            current_cores = custom_context.get("CORES", context["CORES"]) if custom_context else context["CORES"]
+            context["EXTRA_CMD"] = (
+                f"export OMP_NUM_THREADS={current_cores}\n"
+                "export OMP_STACKSIZE=10GB\n"
+                "projection.exe basis.inp wavefunction.dat NBO.out >> $LOG_FILE 2>&1\n"
+                "nbo.exe NBO.out nbo.chk >> $LOG_FILE 2>&1\n"
+                "rm REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR\n"
+            )
         # 维度 3：用户自定义覆盖
         if custom_context:
             context.update(custom_context)
@@ -110,6 +120,7 @@ class Script:
         functional: str = "PBE",
         is_lobster: bool = False,
         is_static: bool = False,
+        is_nbo: bool = False,
         output_filename: str = "script", 
         custom_context: Optional[Dict[str, Any]] = None, 
         make_executable: bool = True
@@ -122,7 +133,7 @@ class Script:
             template_content = f.read()
 
         # 传入 is_static 参数
-        final_context = self._build_context(functional, is_lobster, is_static, custom_context)
+        final_context = self._build_context(functional, is_lobster, is_static, is_nbo, custom_context)
         target_folders = self._parse_folders(folders)
 
         # 1. 渲染并写入 PBS 脚本
