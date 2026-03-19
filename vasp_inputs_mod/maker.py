@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+import numpy as np
 from typing import Any, Dict, List, Optional, Union
 
 from pymatgen.core import Structure
@@ -14,6 +15,7 @@ from .input_sets import (
     MPStaticSetEcat,
     NEBSetEcat,
     SlabSetEcat,
+    DimerSetEcat,
 )
 import logging
 
@@ -93,11 +95,8 @@ class VaspInputMaker:
             }
         )
         return common_kwargs
-
-    # =========================================================================
-    # 任务生成方法 (Task Generation Methods)
-    # =========================================================================
-
+    
+    #INCAR设置接口
     def write_bulk(
         self, 
         structure: Union[str, Structure, Path], 
@@ -291,6 +290,7 @@ class VaspInputMaker:
         vibrate_indices: Optional[List[int]] = None,
         adsorbate_formula: Optional[str] = None,
         adsorbate_formula_prefer: str = "tail",
+        calc_ir: bool = False,
         user_incar_settings: Optional[Dict[str, Any]] = None,
         user_kpoints_settings: Optional[Any] = None,
     ) -> str:
@@ -339,7 +339,44 @@ class VaspInputMaker:
             prev_dir=prev_dir_path,
             structure=final_structure,
             vibrate_indices=final_vibrate_indices,
+            calc_ir=calc_ir,
             **common_kwargs
         )
         input_set.write_input(output_dir)
         return str(output_dir)
+
+    def write_dimer(
+        self,
+        output_dir: Union[str, Path],
+        neb_dir: Optional[Union[str, Path]] = None,
+        num_images: Optional[int] = None,
+        structure: Union[str, Structure, Path, None] = None,
+        modecar: Union[str, Path, np.ndarray, None] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+    ):
+        output_dir = self._ensure_dir(output_dir)
+        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
+        
+        if neb_dir is not None:
+            logger.info(f"Generating Dimer input from NEB directory: {neb_dir}")
+            input_set = DimerSetEcat.from_neb_calc(
+                neb_dir=neb_dir,
+                num_images=num_images,
+                **common_kwargs
+            )
+        else:
+            if structure is None or modecar is None:
+                raise  ValueError(
+                     "Must provide both 'structure' and 'modecar' if 'neb_dir' is not specified."
+                )
+            logger.info("Generating Dimer input from manually provided structure and MODECAR.")
+            input_set = DimerSetEcat(
+                structure=load_structure(structure),
+                modecar=modecar,
+                **common_kwargs
+            )
+        input_set.write_input(output_dir)
+        return str(output_dir)
+
+        

@@ -84,3 +84,17 @@ DEFAULT_INCAR_NEB = {
     "LCLIMB": True,
     "LREAL": "Auto",
 }
+
+DEFAULT_INCAR_DIMER = {
+    "ICHAIN": 2,
+    "IOPT": 2,
+    "IBRION": 3,
+    "POTIM": 0.0,
+    "EDIFF": 1e-7,
+    "DdR": 0.005,
+    "DRotMax": 3,
+    "DFNMax": 1.0,
+    "DFMin": 0.01,
+    "NSW": 1000,
+    "LREAL": "Auto",
+}

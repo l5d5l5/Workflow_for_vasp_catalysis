@@ -3,6 +3,10 @@
 
 from pathlib import Path
 import logging
+import subprocess
+import shutil
+import numpy as np
+import tempfile
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 from pymatgen.core import Structure
@@ -24,6 +28,7 @@ from .constants import (
     DEFAULT_INCAR_NEB,
     DEFAULT_INCAR_SLAB,
     DEFAULT_INCAR_STATIC,
+    DEFAULT_INCAR_DIMER,
     _BEEF_INCAR,
 )
 from .kpoints import build_kpoints_by_lengths
@@ -606,16 +611,18 @@ class FreqSetEcat(MPStaticSetEcat):
         use_default_incar: bool = True,
         use_default_kpoints: bool = False,
         kpoints_density: Optional[Union[int, float, Sequence[float]]] = None,
+        calc_ir: bool = False,
         user_incar_settings: Optional[Dict[str, Any]] = None,
         user_kpoints_settings: Optional[Any] = None,
         **extra_kwargs,
     ):
         loaded_structure = self._load_structure(structure)
         functional = (functional or "PBE").upper()
-
+        ir_tags = {"LEPSILON": True, "NWRITE": 3, "IBRION": 7} if calc_ir else {}
+        base_freq_incar = {**DEFAULT_INCAR_FREQ, **ir_tags}
         incar = self._build_incar(
             functional,
-            DEFAULT_INCAR_FREQ if use_default_incar else None,
+            base_freq_incar if use_default_incar else None,
             user_incar_settings=user_incar_settings
         )
 
@@ -639,6 +646,7 @@ class FreqSetEcat(MPStaticSetEcat):
         prev_dir: Union[str, Path],
         structure: Optional[Union[str, Structure, Path]] = None,
         vibrate_indices: Optional[List[int]] = None,
+        calc_ir: bool = False,
         user_incar_settings: Optional[Dict[str, Any]] = None,
         user_kpoints_settings: Optional[Any] = None,
         **extra_kwargs,
@@ -656,11 +664,12 @@ class FreqSetEcat(MPStaticSetEcat):
         
         for k in ["IBRION", "NSW", "POTIM", "EDIFF", "EDIFFG", "ISIF", "NPAR", "NCORE"]:
             base_incar.pop(k, None)
-
+        ir_tags = {"LEPSILON": True, "NWRITE": 3, "IBRION": 7} if calc_ir else {}
+        extra_incar_combined = {**DEFAULT_INCAR_FREQ, **ir_tags}
         incar = cls._build_incar(
             functional, 
             base_incar, 
-            extra_incar=DEFAULT_INCAR_FREQ, 
+            extra_incar=extra_incar_combined, 
             user_incar_settings=user_incar_settings
         )
         
@@ -685,4 +694,177 @@ class FreqSetEcat(MPStaticSetEcat):
             }
         )
 
+        return cls(**init_kwargs)
+    
+class DimerSetEcat(MPStaticSetEcat):
+    """
+    通过调用底层 VTST 脚本生成 Dimer 计算输入文件。
+    自动读取 IMAGES、补全端点 OUTCAR、覆盖 POSCAR。
+    """
+
+    def __init__(
+        self,
+        structure: Union[str, Structure, Path],
+        modecar: Union[str, Path, np.ndarray],
+        **kwargs,
+    ):
+        #MODECAR以数组的形式存入内存最为合适。
+        if modecar is None:
+            raise ValueError("CRITICAL ERROR: 'modecar' must be provided! ")
+        if isinstance(modecar, (str, Path)):
+            modecar_path = Path(modecar).resolve()
+            if not modecar_path.exists():
+                raise FileNotFoundError(f"Provided MODECAR file does not exist: {modecar_path}")        
+            self.modecar_data = np.loadtxt(modecar_path)
+        elif isinstance(modecar, np.ndarray):
+            self.modecar_data = modecar
+        else:
+            raise TypeError("'modecar' must be either a numpy array or a valid file path.")
+        super().__init__(structure=structure, **kwargs)
+
+    def write_input(self, output_dir: Union[str, Path], **kwargs):
+        super().write_input(output_dir, **kwargs)
+        
+        modecar_path = Path(output_dir) / "MODECAR"
+        with open(modecar_path, "w") as f:
+            for row in self.modecar_data:
+                f.write(f"{row[0]:.8f} {row[1]:.8f} {row[2]:.8f}\n")
+        logger.info(f"MODECAR successfully written to {modecar_path}")
+
+    @classmethod
+    def from_neb_calc(
+        cls,
+        neb_dir: Union[str, Path],
+        num_images: Optional[int] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        neb_dir = Path(neb_dir).resolve()
+        incar_path = neb_dir / "INCAR"
+        
+        if num_images is not None:
+            logger.info(f"User specified num_images={num_images}. Skipping INCAR reading.")
+        else:
+            logger.info("Auto mode: Reading INCAR to determine IMAGES...")
+            if not incar_path.exists():
+                raise FileNotFoundError(f"INCAR not found in {neb_dir}")
+                
+            neb_incar = Incar.from_file(incar_path)
+            raw_images = neb_incar.get("IMAGES")
+            
+            if raw_images is None:
+                raise ValueError("IMAGES tag not found in INCAR. Is this a valid NEB directory?")
+            
+            # 清洗注释
+            if isinstance(raw_images, str):
+                clean_images = raw_images.split('#')[0].split('!')[0].strip()
+            else:
+                clean_images = raw_images
+                
+            try:
+                num_images = int(clean_images)
+            except ValueError:
+                raise ValueError(f"Failed to parse IMAGES value '{raw_images}' as an integer.")
+                
+        num2 = num_images + 1
+
+        #使用沙盒机制，在临时文件夹中执行VTST脚本
+        logger.info("Creating a temporary sandbox to protect original NEB directory...")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            if incar_path.exists():
+                shutil.copy(incar_path, tmp_path / "INCAR")
+            for i in range(num2 + 1):
+                src_d = neb_dir / f"{i:02d}"
+                dst_d = tmp_path / f"{i:02d}"
+                dst_d.mkdir()
+                
+                outcar_src = src_d / "OUTCAR"
+                if not outcar_src.exists():
+                    outcar_src = src_d / "OUTCAR.gz"                
+                if not outcar_src.exists():
+                    if i == 0:
+                        outcar_src = neb_dir / "01" / "OUTCAR"
+                    elif i == num2:
+                        outcar_src = neb_dir / f"{num_images:02d}" / "OUTCAR"
+                if outcar_src.exists():
+                    shutil.copy(outcar_src, dst_d / "OUTCAR")
+
+                # --- 复制 CONTCAR 并重命名为 POSCAR ---
+                contcar_src = src_d / "CONTCAR"
+                if not contcar_src.exists():
+                    contcar_src = src_d / "CONTCAR.gz"
+                    
+                if contcar_src.exists() and contcar_src.stat().st_size > 0:
+                    shutil.copy(contcar_src, dst_d / "POSCAR")
+                else:
+                    # 如果 CONTCAR 不存在或为空，退化使用 POSCAR
+                    poscar_src = src_d / "POSCAR"
+                    if poscar_src.exists():
+                        shutil.copy(poscar_src, dst_d / "POSCAR")
+            # 在沙盒中调用底层 VTST 脚本
+            try:
+                logger.info("Running nebresults.pl in sandbox...")
+                subprocess.run(["nebresults.pl"], cwd=tmp_path, check=True, capture_output=True)
+                
+                logger.info("Running neb2dim.pl in sandbox...")
+                subprocess.run(["neb2dim.pl"], cwd=tmp_path, check=True, capture_output=True)
+            except FileNotFoundError:
+                raise RuntimeError("VTST scripts (nebresults.pl, neb2dim.pl) not found in system PATH.")
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"VTST script execution failed in sandbox:\n{e.stderr.decode()}")
+
+            # 从沙盒中提取数据到内存
+            dim_dir = tmp_path / "dim"
+            if not dim_dir.exists():
+                raise FileNotFoundError(f"neb2dim.pl failed to create the 'dim' directory in sandbox.")
+
+            # 提取 POSCAR 结构
+            saddle_struct = cls._load_structure(dim_dir / "POSCAR")
+            
+            # 提取 MODECAR 数据为 numpy array
+            modecar_file = dim_dir / "MODECAR"
+            if not modecar_file.exists():
+                raise FileNotFoundError(f"MODECAR not found in sandbox.")
+            modecar_data = np.loadtxt(modecar_file)
+            logger.info("Sandbox cleaned up successfully. Original NEB directory is untouched.")
+
+        base_incar, functional = cls._read_and_convert_incar(incar_path, saddle_struct)
+        
+        tags_to_remove = [
+            "IMAGES", "SPRING", "LCLIMB", "ICHAIN", 
+            "IBRION", "NSW", "POTIM", "EDIFF", "IOPT", "##NEB"
+        ]
+        for tag in tags_to_remove:
+            base_incar.pop(tag, None)
+            
+        incar = cls._build_incar(
+            functional,
+            base_incar,
+            extra_incar=DEFAULT_INCAR_DIMER,
+            user_incar_settings=user_incar_settings
+        )
+        
+        kpoints = user_kpoints_settings
+        if kpoints is None:
+            try:
+                kpoints = Kpoints.from_file(neb_dir / "KPOINTS")
+            except FileNotFoundError:
+                logger.warning(f"KPOINTS not found in {neb_dir}, will generate default.")
+                kpoints = None
+
+        init_kwargs = extra_kwargs.copy()
+        init_kwargs.update(
+            {
+                "structure": saddle_struct,
+                "functional": functional,
+                "use_default_incar": False,
+                "use_default_kpoints": False,
+                "user_incar_settings": incar,
+                "user_kpoints_settings": kpoints,
+                "modecar": modecar_data,
+            }
+        )
+            
         return cls(**init_kwargs)
