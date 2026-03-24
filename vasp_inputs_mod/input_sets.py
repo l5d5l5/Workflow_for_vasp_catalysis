@@ -914,6 +914,17 @@ class NBOSetEcat(MPStaticSetEcat):
         # 3. 纯粹地调用父类初始化
         super().__init__(structure=loaded_structure, **kwargs)
 
+        ispin = int(self.incar.get("ISPIN", 1))
+        if ispin == 2:
+            logger.info("ISPIN=2 detected in INCAR. Halving occ_1c (LP) and occ_2c (DP) cutoffs.")
+            for key in ["occ_1c", "occ_2c"]:
+                if key in self.nbo_config_params:
+                    orig_val = float(self.nbo_config_params[key])
+                    new_val = orig_val / 2.0
+                    formatted_val = f"{new_val:.3f}".rstrip('0').rstrip('.')
+                    self.nbo_config_params[key] = formatted_val
+                    logger.debug(f"Adjusted {key}: {orig_val} -> {formatted_val}")
+
     @classmethod
     def from_prev_calc(
         cls,
@@ -955,10 +966,11 @@ class NBOSetEcat(MPStaticSetEcat):
                 logger.warning(f"KPOINTS not found in {prev_dir}, will generate default.")
                 kpoints = None
 
+        final_struct = extra_kwargs.pop("structure", loaded_structure) 
         init_kwargs = extra_kwargs.copy()
         init_kwargs.update(
             {
-                "structure": loaded_structure,
+                "structure": final_struct,
                 "functional": functional,
                 "basis_source": basis_source,
                 "nbo_config": nbo_config,
@@ -1017,8 +1029,22 @@ class NBOSetEcat(MPStaticSetEcat):
             f.write(NBO_CONFIG_TEMPLATE.format(**self.nbo_config_params))
 
     def _write_basis_inp(self, filepath: Path):
+        header = """!----------------------------------------------------------------------
+! Basis Set Exchange
+! Version 0.12
+! https://www.basissetexchange.org
+!----------------------------------------------------------------------
+!   Basis set: ANO-RCC-MB
+! Description: ANO-RCC-MB
+!        Role: orbital
+!     Version: 1  (Data from OpenMolCAS)
+!----------------------------------------------------------------------
+"""
         elements_in_struct = [str(el) for el in self.structure.composition.elements]
+        
         with open(filepath, "w") as f:
+            f.write(header)
+            f.write("****\n")
             for el in elements_in_struct:
                 f.write(f"{el}     0\n")
                 f.write(self.basis_settings[el] + "\n")
