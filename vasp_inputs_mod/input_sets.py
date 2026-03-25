@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""封装各类 VASP 输入集（基于 pymatgen VaspInputSet）。"""
+"""封装各类 VASP 输入集（Based on pymatgen VaspInputSet）。"""
 
 from pathlib import Path
 import logging
@@ -911,7 +911,6 @@ class NBOSetEcat(MPStaticSetEcat):
                 f"CRITICAL: Missing basis set definitions for elements: {missing_elements}. "
             )
 
-        # 3. 纯粹地调用父类初始化
         super().__init__(structure=loaded_structure, **kwargs)
 
         ispin = int(self.incar.get("ISPIN", 1))

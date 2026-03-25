@@ -55,7 +55,7 @@ class Script:
         context = self.base_context.copy()
         functional = functional.upper()
         
-        # 维度 1：处理泛函 (Functional)
+        # 处理泛函 (Functional)
         if "BEEFVTST" in functional:
             context["TYPE1"] = "beefvtst"
         elif "BEEF" in functional: 
@@ -65,7 +65,7 @@ class Script:
         else:
             context["TYPE1"] = "org"
             
-        # 维度 2：处理流程 (Lobster / Static)
+        # 处理流程 (Lobster / Static/ NBO)
         if is_lobster:
             context["WALLTIME"] = 360
             context["COMPILER"] = "2020u2"
@@ -76,7 +76,7 @@ class Script:
             # 单点计算 (Static/NoSCF) 需要保留电子结构性质文件 (DOSCAR, WAVECAR, CHGCAR 等)
             context["CLEANUP_CMD"] = ""
         elif is_nbo:
-            context["CLEANUP_CMD"] = ""  # Lobster 强依赖波函数等文件，不能删
+            context["CLEANUP_CMD"] = ""  # NBO 强依赖波函数等文件，不能删
             current_cores = custom_context.get("CORES", context["CORES"]) if custom_context else context["CORES"]
             context["EXTRA_CMD"] = (
                 f"export OMP_NUM_THREADS={current_cores}\n"
@@ -85,7 +85,7 @@ class Script:
                 "nbo.exe NBO.out nbo.chk >> $LOG_FILE 2>&1\n"
                 "rm REPORT CHG* DOSCAR EIGENVAL IBZKPT PCDAT PROCAR WAVECAR XDATCAR vasprun.xml FORCECAR\n"
             )
-        # 维度 3：用户自定义覆盖
+        # 3：用户自定义覆盖
         if custom_context:
             context.update(custom_context)
             
@@ -156,7 +156,7 @@ class Script:
                 
         logger.info("成功渲染并写入 %d 个 %s！", len(target_folders), output_filename)
 
-        # 2. 核心改进：如果是 BEEF 泛函，自动触发 vdw 文件复制！
+        # 2. 如果是 BEEF 泛函，自动触发 vdw 文件复制！
         if "BEEF" in functional.upper():
             self._copy_vdw_kernel(target_folders)
         return [str(p / output_filename) for p in target_folders]

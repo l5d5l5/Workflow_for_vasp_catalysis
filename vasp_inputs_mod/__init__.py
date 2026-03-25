@@ -1,6 +1,18 @@
-"""Modularized VASP input generation package (ECAT-style)."""
+"""Modularized VASP input generation package."""
 
-from .constants import _BEEF_INCAR
+from .constants import (
+    _BEEF_INCAR,
+    DEFAULT_INCAR_BULK,
+    DEFAULT_INCAR_SLAB,
+    DEFAULT_INCAR_STATIC,
+    DEFAULT_INCAR_NEB,
+    DEFAULT_INCAR_DIMER,
+    DEFAULT_INCAR_FREQ,
+    DEFAULT_INCAR_NBO,
+    DEFAULT_INCAR_LOBSTER,
+    DEFAULT_NBO_CONFIG_PARAMS,
+    MODULE_DIR,
+)
 from .input_sets import (
     BulkRelaxSetEcat,
     FreqSetEcat,
@@ -8,6 +20,9 @@ from .input_sets import (
     MPStaticSetEcat,
     NEBSetEcat,
     SlabSetEcat,
+    NBOSetEcat,
+    DimerSetEcat,
+    VaspInputSetEcat,
 )
 from .maker import VaspInputMaker
 from .script import Script
@@ -30,9 +45,22 @@ __all__ = [
     "LobsterSetEcat",
     "MPStaticSetEcat",
     "NEBSetEcat",
+    "NBOSetEcat",
+    "VaspInputSetEcat",
+    "DEFAULT_INCAR_BULK",
+    "DEFAULT_INCAR_SLAB",
+    "DEFAULT_INCAR_STATIC",
+    "DEFAULT_INCAR_NEB",
+    "DEFAULT_INCAR_DIMER",
+    "DEFAULT_INCAR_FREQ",
+    "DEFAULT_INCAR_NBO",
+    "DEFAULT_INCAR_LOBSTER",
+    "DEFAULT_NBO_CONFIG_PARAMS",
+    "MODULE_DIR",
+    "DimerSetEcat",
     "SlabSetEcat",
     "VaspInputMaker",
-    "ScriptRenderer",
+    "Script",
     "convert_vasp_format_to_pymatgen_dict",
     "detect_adsorbate_indices",
     "formula_to_counts",

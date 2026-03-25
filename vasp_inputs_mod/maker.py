@@ -151,8 +151,7 @@ class VaspInputMaker:
         common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
 
         if prev_dir is not None:
-            # 对于 prev_dir 情况，functional 应由 prev INCAR 决定，
-            # 且不应将 maker 的 functional/extra_kwargs 作为额外参数传入。
+            # 对于 prev_dir 情况，functional 由 prev INCAR 决定，
             input_set = MPStaticSetEcat.from_prev_calc_ecat(
                 prev_dir=Path(prev_dir).resolve(),
                 kpoints_density=self.kpoints_density,
@@ -321,7 +320,7 @@ class VaspInputMaker:
             )
             logger.info("Picked vibrate indices by formula %s: %s", adsorbate_formula, final_vibrate_indices)
         elif mode == "all":
-            #所有原子都参与震动
+            #所有原子都参与振动
             if "selective_dynamics" in final_structure.site_properties:
                 final_structure.remove_site_property("selective_dynamics")
         elif mode == "inherit":
