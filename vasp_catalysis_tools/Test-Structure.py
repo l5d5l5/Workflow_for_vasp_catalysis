@@ -38,3 +38,5 @@ strure9 = modifier.reset_to_initial().transform_structure([[1, 0, 0],
                               [0, 2, 0], 
                               [0, 0, 1]]).get_structure()
 strure9.to(output_path / "transform-POSCAR", fmt="POSCAR")
+
+

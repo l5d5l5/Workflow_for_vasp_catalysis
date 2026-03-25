@@ -5,12 +5,14 @@ Optimized for AI-driven platforms, supporting both Fluent API (chained) and step
 import random
 import math
 import logging
+import itertools
 import numpy as np
 from typing import Optional, Union, Dict, List, Tuple, Sequence, Set
 
 from pymatgen.core import Structure, Element
 from pymatgen.core.lattice import Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.operations import SymmOp
 
 from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix
@@ -85,20 +87,22 @@ class StructureModify:
         return structure
 
     def _apply_defects(self, structure: Structure, indices: Sequence[int], dopant: Optional[Element]) -> Structure:
-        """核心修改逻辑：应用空位或掺杂，并自动修复属性"""
+        """应用空位或掺杂，并自动修复属性"""
         new_struct = structure.copy()
         if dopant is None:
             new_struct.remove_sites(sorted(indices, reverse=True))
         else:
             for idx in indices:
-                new_struct.replace(idx, dopant)
+                site = new_struct[idx]
+                new_struct.replace(idx, species=dopant, properties=site.properties)
         return self._sanitize_structure(new_struct)
 
     def _find_candidate_indices(self, substitute_element: Element, is_slab: bool = False,
                                 target_layer_indices: Optional[List[int]] = None,
                                 z_range: Optional[Tuple[float, float]] = None,
                                 top_layers: Optional[int] = None,
-                                target_cn: Optional[int] = None, cn_cutoff: Optional[float] = None) -> List[int]:
+                                target_cn: Optional[int] = None, cn_cutoff: Optional[float] = None,
+                                use_symmetry: bool = False) -> List[int]:
         """寻找可替换的候选原子索引"""
         candidates = [i for i, s in enumerate(self._structure) 
                       if s.specie == substitute_element and tuple(s.frac_coords) not in self._fixed_frac_coords]
@@ -135,7 +139,7 @@ class StructureModify:
             if not candidates:
                 raise ValueError(f"No sites with CN={target_cn} found.")
 
-        if is_slab: 
+        if is_slab or not use_symmetry: 
             return candidates
         
         try:
@@ -241,7 +245,7 @@ class StructureModify:
     def modify_lattice(self, a: Optional[float] = None, b: Optional[float] = None, 
                       c: Optional[float] = None, alpha: Optional[float] = None, 
                       beta: Optional[float] = None, gamma: Optional[float] = None, 
-                      scale_sites: bool = True) -> 'StructureModify':
+        ) -> 'StructureModify':
         """修改晶胞参数"""
         lattice = self._structure.lattice
         new_a = a if a is not None else lattice.a
@@ -277,6 +281,30 @@ class StructureModify:
     # ==========================================
     # 缺陷/掺杂批量生成模块 (返回 List[Structure])
     # ==========================================
+    
+    def _get_dopant_distance_fingerprint(self, indices: Sequence[int]) -> tuple:
+        """
+        计算掺杂原子的距离指纹 (极速物理去重核心)
+        """
+        if len(indices) < 2:
+            return tuple()
+            
+        # 获取选中原子的分数坐标
+        frac_coords = [self._structure[i].frac_coords for i in indices]
+        
+        # 利用 pymatgen 的 lattice 计算考虑周期性边界条件的最短距离矩阵
+        dist_matrix = self._structure.lattice.get_all_distances(frac_coords, frac_coords)
+        
+        # 提取上三角矩阵的距离值（即两两之间的距离）
+        distances = []
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                # 保留 2 位小数，容忍微小的数值误差
+                distances.append(round(dist_matrix[i, j], 2))
+                
+        # 排序后作为元组返回，这就是该构型的唯一指纹
+        return tuple(sorted(distances))
+    
     def generate_defects_batch(
         self, 
         substitute_element: Union[Element, str], 
@@ -286,37 +314,66 @@ class StructureModify:
         random_seed: Optional[int] = None, 
         **kwargs
     ) -> List[Structure]:
-        """批量生成随机掺杂或空位结构"""
+        """批量生成随机掺杂或空位结构 (采用极速距离指纹去重)"""
         if random_seed is not None:
             random.seed(random_seed)
             
         sub_el = self._parse_element(substitute_element)
         dopant_el = self._parse_element(dopant)
 
+        # 1. 如果只掺杂 1 个原子，直接使用对称性消除，这是最快且最完美的
+        kwargs['use_symmetry'] = False
         candidates = self._find_candidate_indices(sub_el, **kwargs)
         n_max = len(candidates)
+        
         if n_max == 0:
+            logging.warning(f"No candidates found for {substitute_element}.")
             return []
 
         n_sub = max(1, math.ceil(dopant_num * n_max)) if isinstance(dopant_num, float) else min(dopant_num, n_max)
+        
+        # --- 特殊极速通道：单原子掺杂 ---
+        if n_sub == 1:
+            kwargs['use_symmetry'] = True # 开启对称性消除
+            sym_candidates = self._find_candidate_indices(sub_el, **kwargs)
+            results = []
+            for idx in sym_candidates[:num_structs]:
+                results.append(self._apply_defects(self._structure, [idx], dopant_el))
+            return results
+        # -------------------------------
 
-        results = []
-        seen = set()
-        for _ in range(num_structs * 10):
-            if len(results) >= num_structs: 
-                break
-                
+        logging.info(f"Total {substitute_element} atoms: {n_max}. Will replace {n_sub} of them with {dopant}.")
+
+        max_comb = math.comb(n_max, n_sub)
+        
+        unique_structures = []
+        seen_fingerprints = set()
+        
+        # 放大尝试次数，因为会有很多物理等价的结构被拒绝
+        max_attempts = num_structs * 100 
+        attempts = 0
+        
+        while len(unique_structures) < num_structs and attempts < max_attempts:
+            attempts += 1
             chosen = tuple(sorted(random.sample(candidates, n_sub)))
-            fingerprint = tuple(tuple(self._structure[i].frac_coords) for i in chosen)
             
-            if fingerprint in seen: 
+            # 计算极速距离指纹
+            fingerprint = self._get_dopant_distance_fingerprint(chosen)
+            
+            # 如果指纹已经存在，说明物理构型重复，直接跳过 (耗时几乎为 0)
+            if fingerprint in seen_fingerprints:
                 continue
-            seen.add(fingerprint)
+                
+            seen_fingerprints.add(fingerprint)
             
+            # 只有当构型真正独特时，才去执行耗时的结构复制和替换操作
             new_struct = self._apply_defects(self._structure, chosen, dopant_el)
-            results.append(new_struct)
+            unique_structures.append(new_struct)
+                
+        if len(unique_structures) < num_structs:
+            logging.warning(f"Only found {len(unique_structures)} physically unique structures after {attempts} attempts.")
             
-        return results
+        return unique_structures
 
     def generate_defects_step_by_step(
         self, 
@@ -328,44 +385,75 @@ class StructureModify:
         random_seed: Optional[int] = None, 
         **kwargs
     ) -> Union[List[Structure], List[List[Structure]]]:
-        """逐步生成掺杂或空位结构"""
+        """
+        按层级 (Level-by-Level) 逐步生成掺杂结构 (广度优先搜索)。
+        彻底消除早期步骤的冗余结构。
+        """
         if random_seed is not None:
             random.seed(random_seed)
             
         sub_el = self._parse_element(substitute_element)
         dopant_el = self._parse_element(dopant)
 
-        try:
-            candidates = self._find_candidate_indices(sub_el, **kwargs)
-        except ValueError as e:
-            logging.warning(f"Initialization failed: {e}")
-            return []
-
-        if len(candidates) < max_steps:
-            logging.warning(f"Not enough candidates ({len(candidates)}) for {max_steps} steps.")
-            return []
-
-        all_paths = []
-        final_structs = []
-        seen_paths = set()
-
-        for _ in range(max_structures_num * 50):
-            if len(all_paths) >= max_structures_num: 
-                break
-            chosen_seq = random.sample(candidates, max_steps)
-            path_fingerprint = frozenset(chosen_seq)
-            if path_fingerprint in seen_paths: 
-                continue
-            seen_paths.add(path_fingerprint)
-
-            current_path = []
-            for step in range(1, max_steps + 1):
-                indices_subset = chosen_seq[:step]
-                # 基于当前状态的结构进行缺陷累加
-                step_struct = self._apply_defects(self._structure, indices_subset, dopant_el)
-                current_path.append(step_struct)
+        # 获取所有候选位点
+        kwargs['use_symmetry'] = False
+        all_candidates = self._find_candidate_indices(sub_el, **kwargs)
+        
+        # 第一步：强制使用对称性消除，获取物理上唯一的起点
+        kwargs['use_symmetry'] = True
+        sym_candidates = self._find_candidate_indices(sub_el, **kwargs)
+        
+        # current_paths 记录当前层级的所有路径，每条路径是一个元组 (idx1, idx2, ...)
+        current_paths = [ (idx,) for idx in sym_candidates ]
+        
+        # 如果初始对称性较低，导致第一步就有多种可能，我们限制其数量
+        if len(current_paths) > max_structures_num:
+            current_paths = random.sample(current_paths, max_structures_num)
             
-            all_paths.append(current_path)
-            final_structs.append(current_path[-1])
-
-        return all_paths if return_all_steps else final_structs
+        all_levels_paths = [current_paths]
+        
+        # 从第 2 步开始逐层扩展
+        for step in range(2, max_steps + 1):
+            next_paths = []
+            seen_fingerprints = set()
+            
+            # 为了防止每次都选到相同的近邻原子，随机打乱候选列表
+            shuffled_candidates = list(all_candidates)
+            random.shuffle(shuffled_candidates)
+            
+            # 遍历上一层的所有有效路径，尝试添加一个新原子
+            for path in current_paths:
+                for c in shuffled_candidates:
+                    if c in path:
+                        continue
+                        
+                    # 组合成新的路径并排序，确保指纹计算的一致性
+                    new_path = tuple(sorted(path + (c,)))
+                    fp = self._get_dopant_distance_fingerprint(new_path)
+                    
+                    if fp not in seen_fingerprints:
+                        seen_fingerprints.add(fp)
+                        next_paths.append(new_path)
+                        
+                        # 如果当前层级已经收集到了足够多的唯一结构，提前结束当前层的搜索
+                        if len(next_paths) >= max_structures_num:
+                            break
+                if len(next_paths) >= max_structures_num:
+                    break
+                    
+            current_paths = next_paths
+            all_levels_paths.append(current_paths)
+            
+        # 将原子索引序列转换为真实的 Structure 对象
+        if return_all_steps:
+            result_structures = []
+            for level_paths in all_levels_paths:
+                level_structs = []
+                for path in level_paths:
+                    level_structs.append(self._apply_defects(self._structure, path, dopant_el))
+                result_structures.append(level_structs)
+            return result_structures
+        else:
+            # 如果不返回所有步骤，只返回最后一步的结构
+            final_paths = all_levels_paths[-1]
+            return [self._apply_defects(self._structure, path, dopant_el) for path in final_paths]
