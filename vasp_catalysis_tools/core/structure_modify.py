@@ -17,7 +17,6 @@ from pymatgen.core.operations import SymmOp
 
 from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix
 
-
 class StructureModify:
     """
     结构修改工具类。
