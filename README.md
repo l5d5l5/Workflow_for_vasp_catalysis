@@ -1,1 +1,2 @@
 # Workflow_for_vasp_catalysis
+用于计算化学AI平台开发使用，主要用于实现在平台修改结构，设置输入文件等内容
