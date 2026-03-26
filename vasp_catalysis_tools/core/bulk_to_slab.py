@@ -2,11 +2,11 @@
 Bulk to Slab Generator for VASP catalysis simulations.
 """
 import os
-import logging
+import warnings
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Union, Dict, List, Tuple, Any
+from typing import Optional, Union, Dict, List, Tuple, Any, Sequence
 
 import numpy as np
 from pymatgen.core import Structure
@@ -14,156 +14,108 @@ from pymatgen.core.surface import Slab, SlabGenerator, center_slab
 from pymatgen.io.vasp import Poscar
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
-from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix
-
+from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix, load_structure
 
 class BulkToSlabGenerator:
     """
     Robust generator for creating slabs from bulk, with specific layer counts and fixation.
+    支持传统的单步调用，也支持 Fluent API 链式调用。
     """
     def __init__(
             self, 
             structure_source: Union[Structure, str, Path],
             save_dir: Optional[Union[str, Path]] = None,
-            standardize: bool=True, 
-            log_to_file: bool = True,):
+            standardize: bool = True):
 
-        self.bulk_structure = self._resolve_structure_input(structure_source)
+        # 直接调用外部的通用工具函数，代码变得极其清爽
+        self.bulk_structure = load_structure(structure_source)
         
-        if save_dir:
-            self.save_dir = Path(save_dir)
-        else:
-            self.save_dir = Path.cwd() / f"slabs_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-        self.logger = self._setup_logger(self.save_dir, log_to_file)
-
+        self.save_dir = Path(save_dir) if save_dir else None
         if standardize:
             try:
                 sga = SpacegroupAnalyzer(self.bulk_structure, symprec=0.1)
                 self.bulk_structure = sga.get_conventional_standard_structure()
-                self.logger.info("Converted to conventional standard structure.")
-            except Exception:
-                self.logger.warning("Standardization failed, using original structure.")
+            except Exception as e:
+                warnings.warn(f"Standardization failed ({e}), using original structure.")
+                
+        self._slabs: List[Slab] = []
 
     @staticmethod
-    def run_from_dict(config: Dict[str, Any]) -> List[Slab]:
-        """
-        静态方法：通过字典配置执行完整的生成流程。
+    def run_from_dict(config: Dict[str, Any]) -> List['Slab']:
+        """静态方法：通过字典配置执行完整的生成流程，带有严格的参数检查和智能路径推导。"""
         
-        Config 字典结构示例:
-        {
-            # --- 初始化参数 ---
-            "structure_source": "POSCAR",  (必需)
-            "save_dir": "output_slabs",
-            "standardize_bulk": True,
-            
-            # --- 生成参数 (传递给 generate) ---
-            "generate_params": {
-                "miller_indices": "111",   (必需)
-                "target_layers": 4,        (必需)
-                "vacuum_thickness": 15.0,
-                "supercell_matrix": "2x2",
-                "symmetric": True,
-                "fix_bottom_layers": 2
-            },
-            
-            # --- 保存参数 ---
-            "save_options": {
-                "save": True,
-                "filename_prefix": "POSCAR_slab" 
-            }
-        }
-        """
+        # 1. 基础参数检查
+        source = config.get("structure_source")
+        if not source:
+            raise ValueError("Config error: 'structure_source' is required.")
+
+        gen_params = config.get("generate_params")
+        if not gen_params:
+            raise ValueError("Config error: 'generate_params' dictionary is required.")
+
+        required_gen_keys = ["miller_indices", "target_layers"]
+        for key in required_gen_keys:
+            if key not in gen_params or gen_params[key] is None:
+                raise ValueError(f"Config error: '{key}' is required in 'generate_params'.")
+
+        # 2. 智能处理保存路径
+        save_dir = config.get("save_dir")
+        save_opts = config.get("save_options", {})
+        should_save = save_opts.get("save", True)
+
+        if should_save and not save_dir:
+            if isinstance(source, (str, Path)):
+                # 如果用户没给路径，但给了文件源：保存在 bulk 结构同级目录下，并带上参数信息
+                base_dir = Path(source).parent
+                
+                # 解析参数用于命名 (例如: 111, 4L, 2x2)
+                hkl = gen_params["miller_indices"]
+                hkl_str = "".join(map(str, hkl)) if isinstance(hkl, (list, tuple)) else str(hkl)
+                layers = gen_params["target_layers"]
+                
+                sc = gen_params.get("supercell_matrix")
+                if sc:
+                    if isinstance(sc, (list, tuple)):
+                        sc_str = f"{sc[0]}x{sc[1]}"
+                    else:
+                        sc_str = str(sc)
+                else:
+                    sc_str = "1x1"
+                    
+                save_dir = base_dir / f"slab_{hkl_str}_{layers}L_{sc_str}"
+                print(f"未指定 save_dir，自动推导保存路径为: {save_dir}")
+            else:
+                # 如果传入的是内存 Structure 对象且没给路径，直接报错
+                raise ValueError("Config error: 'save_dir' must be provided when 'structure_source' is an in-memory object.")
+
+        # 3. 初始化并执行
         init_kwargs = {
-            "structure_source": config.get("structure_source"),
-            "save_dir": config.get("save_dir"),
-            "standardize": config.get("standardize_bulk", True),
-            "log_to_file": config.get("log_to_file", True)
+            "structure_source": source,
+            "save_dir": save_dir,
+            "standardize": config.get("standardize_bulk", True)
         }
-        
-        if not init_kwargs["structure_source"]:
-            raise ValueError("Config dictionary must contain 'structure_source'.")
 
         generator = BulkToSlabGenerator(**init_kwargs)
         
-        gen_params = config.get("generate_params", {})
-        if "miller_indices" not in gen_params or "target_layers" not in gen_params:
-            raise ValueError("'generate_params' must contain 'miller_indices' and 'target_layers'.")
-
-        slabs = generator.generate(**gen_params)
+        # 执行生成逻辑
+        slabs = generator.generate(**gen_params).get_slabs()
         
-        save_opts = config.get("save_options", {})
-        should_save = save_opts.get("save", True)
-        prefix = save_opts.get("filename_prefix", "POSCAR")
-        
+        # 4. 保存逻辑
         if should_save and slabs:
-            hkl = gen_params.get("miller_indices")
-            layers = gen_params.get("target_layers")
+            fmt = save_opts.get("fmt", "poscar")
+            user_filename = save_opts.get("filename", save_opts.get("filename_prefix", "POSCAR"))
             
             for i, slab in enumerate(slabs):
-                # 自动构建文件名: Prefix_HKL_Layers_TermX.vasp
-                suffix = f"_term{i}" if len(slabs) > 1 else ""
-                fname = f"{prefix}_{hkl}_{layers}L{suffix}.vasp"
+                if len(slabs) == 1:
+                    fname = user_filename
+                else:
+                    fname = f"{user_filename}_term{i}"
                 
-                generator.save_slab(slab, filename=fname)
+                generator.save_slab(slab, filename=fname, fmt=fmt)
                 
         return slabs
 
-    def _resolve_structure_input(self, source: Union[Structure, str, Path]) -> Structure:
-        """内部逻辑：解析输入源并返回 Structure 对象和来源描述。"""
-        # case A : Structure type
-        if isinstance(source, Structure):
-            return source
-        
-        path = Path(source)
-        if not path.exists():
-            raise FileNotFoundError(f"Structure source not found: {path}")
-
-        # case B : dir type
-        if path.is_dir():
-            priority_files = ["CONTCAR", "POSCAR", "POSCAR.vasp"]
-            for fname in priority_files:
-                fpath = path / fname
-                if fpath.exists() and fpath.stat().st_size > 0:
-                    try:
-                        return Structure.from_file(fpath)
-                    except Exception:
-                        continue
-            
-            cif_files = list(path.glob("*.cif"))
-            if cif_files:
-                return Structure.from_file(cif_files[0])
-            
-            raise FileNotFoundError(f"No valid structure files (CONTCAR/POSCAR/cif) found in {path}")
-
-        # case C : file
-        if path.is_file():
-            return Structure.from_file(path)
-
-        raise ValueError("Invalid structure source type.")
-
-    def _setup_logger(self, output_dir: Path, log_to_file: bool) -> logging.Logger:
-        logger = logging.getLogger(f"SlabGen_{id(self)}")
-        logger.setLevel(logging.INFO)
-        if logger.hasHandlers(): logger.handlers.clear()
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
-        
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
-        
-        if log_to_file:
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-                fh = logging.FileHandler(output_dir / "slab_gen.log", mode='w', encoding='utf-8')
-                fh.setFormatter(formatter)
-                logger.addHandler(fh)
-            except Exception as e:
-                print(f"Warning: Could not create log file: {e}")
-        return logger
-
     def _normalize_miller_indices(self, miller_indices: Union[int, str, Tuple[int, int, int]]) -> Tuple[int, int, int]:
-        """miller index"""
         try:
             if isinstance(miller_indices, int):
                 s = str(miller_indices)
@@ -226,11 +178,45 @@ class BulkToSlabGenerator:
         new_slab.add_site_property("selective_dynamics", sd)
         return new_slab
 
+    def save_slab(self, slab: Structure, filename: Union[str, Path], fmt: str = "poscar", output_dir: Optional[Union[str, Path]] = None):
+        """
+        保存 Slab 结构。支持智能路径推导。
+        """
+        file_path = Path(filename)
+        
+        # 1. 如果用户显式指定了 output_dir，优先使用
+        if output_dir:
+            target_dir = Path(output_dir)
+            out_path = target_dir / file_path.name
+            
+        # 2. 如果用户把路径写在了 filename 里 (例如: output_path / "POSCAR")
+        elif file_path.parent != Path("") and str(file_path.parent) != ".":
+            target_dir = file_path.parent
+            out_path = file_path
+            
+        # 3. 如果在类初始化时指定了全局 save_dir
+        elif self.save_dir:
+            target_dir = self.save_dir
+            out_path = target_dir / file_path.name
+            
+        # 4. 兜底方案：如果什么都没指定，默认保存到当前运行目录 (cwd)
+        else:
+            target_dir = Path.cwd()
+            out_path = target_dir / file_path.name
+            
+        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        if fmt.lower() == "poscar":
+            Poscar(slab).write_file(out_path)
+        else:
+            slab.to(filename=str(out_path), fmt=fmt)
+
     def generate(
         self,
         miller_indices: Union[int, str, Tuple[int, int, int]],
         target_layers: int,
         vacuum_thickness: float = 15.0,
+        shift: Optional[float] = None,
         supercell_matrix: Optional[Union[str, Tuple[int, int, int]]] = None,
         fix_bottom_layers: int = 0,
         hcluster_cutoff: float = 0.25,
@@ -240,15 +226,11 @@ class BulkToSlabGenerator:
         center: bool = True,
         primitive: bool = True,
         lll_reduce: bool = True,
-    ) -> List[Slab]:
-        """
-        生成 Slab 列表。
-        """
+    ) -> 'BulkToSlabGenerator':
         hkl = self._normalize_miller_indices(miller_indices)
-        sc_mat = parse_supercell_matrix(supercell_matrix)
+        sc_mat = parse_supercell_matrix(supercell_matrix) if supercell_matrix else None
         
         estimated_min_size = (target_layers * 2.5) + 8.0
-        self.logger.info(f"Generating HKL={hkl}, Layers={target_layers}. Est. Thickness={estimated_min_size}A")
 
         slabgen = SlabGenerator(
             self.bulk_structure, hkl, 
@@ -257,19 +239,21 @@ class BulkToSlabGenerator:
             center_slab=center, primitive=primitive, lll_reduce=lll_reduce
         )
         
-        raw_slabs = slabgen.get_slabs(tol=0.1, max_broken_bonds=0)
-        
-        if not raw_slabs:
-            self.logger.warning("Retrying with double thickness...")
-            slabgen = SlabGenerator(
-                self.bulk_structure, hkl, 
-                min_slab_size=estimated_min_size * 2, 
-                min_vacuum_size=vacuum_thickness,
-                center_slab=center, primitive=primitive, lll_reduce=lll_reduce
-            )
+        if shift is not None:
+            raw_slabs = [slabgen.get_slab(shift=shift)]
+        else:
             raw_slabs = slabgen.get_slabs(tol=0.1, max_broken_bonds=0)
+        
             if not raw_slabs:
-                raise ValueError(f"Failed to generate slabs for {hkl}.")
+                slabgen = SlabGenerator(
+                    self.bulk_structure, hkl, 
+                    min_slab_size=estimated_min_size * 2, 
+                    min_vacuum_size=vacuum_thickness,
+                    center_slab=center, primitive=primitive, lll_reduce=lll_reduce
+                )
+                raw_slabs = slabgen.get_slabs(tol=0.1, max_broken_bonds=0)
+                if not raw_slabs:
+                    raise ValueError(f"Failed to generate slabs for {hkl}.")
 
         processed_slabs = []
         
@@ -278,34 +262,52 @@ class BulkToSlabGenerator:
                 slab = self._trim_to_target_layers(raw_slab, target_layers, symmetric=symmetric, hcluster_cutoff=hcluster_cutoff)
                 try: slab = slab.get_orthogonal_c_slab()
                 except Exception: pass
-
+                
                 if sc_mat: slab.make_supercell(sc_mat)
                 if center: slab = center_slab(slab)
-                
                 slab = self.set_selective_dynamics(slab, fix_bottom_layers, fix_top_layers, all_fix, hcluster_cutoff=hcluster_cutoff)
+                
                 processed_slabs.append(slab)
                 
             except ValueError as e:
-                self.logger.warning(f"Skipping termination {i}: {e}")
+                warnings.warn(f"Skipping termination {i}: {e}")
                 continue
 
-        return processed_slabs
+        self._slabs = processed_slabs
+        return self
 
-    def save_slab(
-        self, 
-        slab: Structure, 
-        filename: str, 
-        fmt: str = "poscar", 
-        output_dir: Optional[Union[str, Path]] = None
-    ):
-        """保存单个 Slab。"""
-        target_dir = Path(output_dir) if output_dir else self.save_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        out_path = target_dir / filename
-        
-        if fmt.lower() == "poscar":
-            Poscar(slab).write_file(out_path)
-        else:
-            slab.to(filename=str(out_path), fmt=fmt)
-            
-        self.logger.info(f"Saved to {out_path}")
+    def get_slabs(self) -> List[Slab]:
+        return [slab.copy() for slab in self._slabs]
+
+    def get_slab(self, termination_index: int = 0) -> Slab:
+        if not self._slabs:
+            raise ValueError("No slabs generated yet. Call generate() first.")
+        if termination_index >= len(self._slabs) or termination_index < -len(self._slabs):
+            raise IndexError(f"Termination index {termination_index} out of range.")
+        return self._slabs[termination_index].copy()
+
+    def select_termination(self, index: int) -> 'BulkToSlabGenerator':
+        if not self._slabs:
+            raise ValueError("No slabs to select from. Call generate() first.")
+        try:
+            self._slabs = [self._slabs[index]]
+        except IndexError:
+            raise IndexError(f"Termination index {index} out of range.")
+        return self
+
+    def make_supercell(self, supercell_matrix: Union[str, Sequence[int], int]) -> 'BulkToSlabGenerator':
+        if not self._slabs:
+            return self
+        matrix = parse_supercell_matrix(supercell_matrix)
+        for slab in self._slabs:
+            slab.make_supercell(matrix)
+        return self
+
+    def set_fixation(self, fix_bottom_layers: int = 0, fix_top_layers: int = 0, all_fix: bool = False, hcluster_cutoff: float = 0.25) -> 'BulkToSlabGenerator':
+        if not self._slabs:
+            return self
+        for i in range(len(self._slabs)):
+            self._slabs[i] = self.set_selective_dynamics(
+                self._slabs[i], fix_bottom_layers, fix_top_layers, all_fix, hcluster_cutoff
+            )
+        return self

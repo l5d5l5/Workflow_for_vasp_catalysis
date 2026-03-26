@@ -6,10 +6,47 @@ from collections import defaultdict
 from typing import Optional, Union, Sequence, Tuple
 
 import numpy as np
+import warnings
+from pathlib import Path
 from scipy.spatial.distance import squareform
 from scipy.cluster.hierarchy import linkage, fcluster
 from pymatgen.core import Structure
 
+
+def load_structure(struct_source: Union[str, Path, Structure]) -> Structure:
+    """Load a structure from a file/dir/Structure object.
+    
+    Priority for directories: CONTCAR > POSCAR > POSCAR.vasp > *.vasp > *.cif
+    """
+    if isinstance(struct_source, Structure):
+        return struct_source.copy()
+
+    p = Path(struct_source).expanduser().resolve()
+
+    if p.is_file():
+        return Structure.from_file(p)
+    
+    if p.is_dir():
+        for fname in ["CONTCAR", "POSCAR", "POSCAR.vasp"]:
+            fp = p / fname
+            # 增加 st_size > 0 检查，防止读取到空的占位文件报错
+            if fp.exists() and fp.stat().st_size > 0:
+                return Structure.from_file(fp)
+            
+        vasp_files = list(p.glob("*.vasp"))
+        if len(vasp_files) == 1:
+            return Structure.from_file(vasp_files[0])
+        elif len(vasp_files) > 1:
+            warnings.warn(f"Multiple .vasp files found in {p}; using {vasp_files[0]}")
+            return Structure.from_file(vasp_files[0])
+        
+        cif_files = list(p.glob("*.cif"))
+        if len(cif_files) == 1:
+            return Structure.from_file(cif_files[0])
+        elif len(cif_files) > 1:
+            raise FileNotFoundError(f"Multiple CIF files found in {p}. Please specify one explicitly.")
+
+    raise FileNotFoundError(f"No valid structure file found in: {p}")
 
 def parse_supercell_matrix(matrix: Optional[Union[str, Sequence[int], Sequence[Sequence[int]]]]):
     """

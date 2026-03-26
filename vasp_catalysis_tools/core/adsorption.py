@@ -1,26 +1,23 @@
 """
 Adsorption site identification and modification for VASP catalysis.
 """
-import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
-from collections import Counter
-from typing import Optional, Union, Dict, List, Tuple, Any, Set
+from typing import Optional, Union, Dict, List, Tuple, Any
 
-from pymatgen.core import Structure, Element, Molecule, PeriodicSite
-from pymatgen.core.surface import Slab, center_slab
+from pymatgen.core import Structure, Molecule
+from pymatgen.core.surface import Slab
 from pymatgen.io.vasp import Poscar
 from pymatgen.analysis.adsorption import AdsorbateSiteFinder, plot_slab
 from pymatgen.io.ase import AseAtomsAdaptor
-
-from ..utils.structure_utils import get_atomic_layers
 
 
 class AdsorptionModify(AdsorbateSiteFinder):
     """
     增强版吸附位点查找与修饰工具。
+    支持传统的单步调用，也支持 Fluent API 链式调用。
     """
 
     def __init__(
@@ -29,20 +26,251 @@ class AdsorptionModify(AdsorbateSiteFinder):
         selective_dynamics: bool = False, 
         height: float = 0.9,
         mi_vec: Optional[np.ndarray] = None,
-        save_dir: Optional[Union[str, Path]] = None,
-        log_to_file: bool = True,
-        logger: Optional[logging.Logger] = None
+        save_dir: Optional[Union[str, Path]] = None
     ):
         self.slab, self.source_info = self._resolve_structure_input(slab_source)
         super().__init__(slab=self.slab, selective_dynamics=selective_dynamics, height=height, mi_vec=mi_vec)
 
         self.save_dir = Path(save_dir) if save_dir else Path.cwd() / f"adsorption_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        if logger:
-            self.logger = logger
-        else:
-            self.logger = self._setup_logger(self.save_dir, log_to_file)
-            self.logger.info(f"Initialized AdsorptionModify with slab from: {self.source_info}")
+        # 内部状态：存储生成的吸附结构及其元数据
+        self._generated_structures: List[Dict[str, Any]] = []
+        
+        print(f"Initialized AdsorptionModify with slab from: {self.source_info}")
+
+    @staticmethod
+    def run_from_dict(config: Dict[str, Any]) -> Union[List[Structure], Dict[str, List[np.ndarray]]]:
+        """静态方法：通过字典配置执行完整的生成/分析流程。"""
+        
+        # 1. 基础参数检查
+        if "target_slab_source" not in config or not config["target_slab_source"]:
+            raise ValueError("Config error: 'target_slab_source' is required.")
+            
+        mode = config.get("mode", "analyze").lower()
+        valid_modes = ["analyze", "relative", "generate"]
+        if mode not in valid_modes:
+            raise ValueError(f"Config error: Invalid mode '{mode}'. Must be one of {valid_modes}.")
+
+        gen_params = config.get("generate_params", {})
+        
+        init_kwargs = {
+            "slab_source": config["target_slab_source"],
+            "save_dir": config.get("save_dir"),
+            "selective_dynamics": gen_params.get("selective_dynamics", False)
+        }
+        
+        modifier = AdsorptionModify(**init_kwargs)
+        print(f"Running in mode: {mode}")
+
+        # --- 1. 分析模式 ---
+        if mode == "analyze":
+            return modifier.analyze(
+                plot=config.get("plot", True),
+                plot_params=config.get("plot_params", {})
+            )
+            
+        # --- 2. 相对放置模式 (增加严格的参数校验) ---
+        elif mode == "relative":
+            rel_params = config.get("relative_params")
+            if not rel_params:
+                raise ValueError(" Config error: 'relative_params' dictionary is missing for 'relative' mode.")
+                
+            # 检查 relative 模式必须的三个参数
+            required_rel_keys = ["reference_slab_source", "adsorbate_indices", "adsorbate_anchor_indices"]
+            for key in required_rel_keys:
+                if key not in rel_params or rel_params[key] is None:
+                    raise ValueError(f" Config error: '{key}' is required in 'relative_params'.")
+
+            modifier.place_relative(
+                reference_slab_source=rel_params["reference_slab_source"],
+                adsorbate_indices=rel_params["adsorbate_indices"],
+                adsorbate_anchor_indices=rel_params["adsorbate_anchor_indices"],
+                find_args=rel_params.get("find_args", {}), 
+                movable_adsorbate_indices=rel_params.get("movable_adsorbate_indices")
+            )
+            
+        # --- 3. 批量生成模式 (增加严格的参数校验) ---
+        elif mode == "generate":
+            if "molecule_formula" not in gen_params or not gen_params["molecule_formula"]:
+                raise ValueError("Config error: 'molecule_formula' is required in 'generate_params' for 'generate' mode.")
+                
+            modifier.generate(
+                molecule_formula=gen_params["molecule_formula"],
+                find_args=gen_params.get("find_args", {}),
+                reorient=gen_params.get("reorient", True),
+                plot=config.get("plot", True),
+                plot_params=config.get("plot_params", {})
+            )
+
+        # 统一保存逻辑
+        save_opts = config.get("save_options", {})
+        if save_opts.get("save", True) and modifier._generated_structures:
+            modifier.save_all(
+                filename_prefix=save_opts.get("filename", "POSCAR"),
+                fmt=save_opts.get("fmt", "poscar"),
+                as_subdirs=save_opts.get("as_subdirs", True)
+            )
+            
+        return modifier.get_structures()
+
+    def analyze(self, plot: bool = True, plot_params: dict = None) -> Dict[str, List[np.ndarray]]:
+        """查找并直接返回吸附位点坐标字典 (剔除 'all' 键)。"""
+        sites = self.find_adsorption_sites()
+        
+        # 剔除冗余的 'all' 键
+        if "all" in sites:
+            del sites["all"]
+            
+        print(f"Found sites: { {k: len(v) for k, v in sites.items()} }")
+        
+        if plot:
+            self._plot_and_show(plot_params or {}, sites)
+            
+        return sites
+
+    def generate(self, molecule_formula: str, find_args: dict = None, reorient: bool = True, plot: bool = False, plot_params: dict = None) -> 'AdsorptionModify':
+        """在各个位点上生成吸附结构 (支持链式调用)。"""
+        if not molecule_formula: 
+            raise ValueError("molecule_formula is required for generation.")
+            
+        try:
+            # 1. 优先尝试从 ASE 内置数据库获取 (如 "CO", "OH")
+            molecule = self.ase2pmg(molecule_formula)
+        except Exception as e_ase:
+            file_path = Path(molecule_formula)
+            if file_path.exists():
+                try:
+                    # 2. 尝试直接作为分子读取 (适用于 .xyz, .mol 等格式)
+                    molecule = Molecule.from_file(file_path)
+                except Exception:
+                    # 3. 如果失败 (说明可能是 POSCAR/CONTCAR)，则作为周期性结构读取，并强制转换为分子
+                    try:
+                        temp_struct = Structure.from_file(file_path)
+                        # 剥离晶格，只保留原子种类和笛卡尔坐标，转换为 Molecule
+                        molecule = Molecule(temp_struct.species, temp_struct.cart_coords)
+                        print(f"Loaded molecule from periodic structure file: {file_path.name}")
+                    except Exception as e_struct:
+                        raise ValueError(f"Failed to parse '{file_path}' as either Molecule or Structure. Error: {e_struct}")
+            else:
+                raise ValueError(f"Failed to load molecule '{molecule_formula}': Not in ASE database and file not found.")
+
+        find_args = (find_args or {}).copy()
+        requested_positions = find_args.pop("positions", []) 
+        
+        all_sites = self.find_adsorption_sites(**find_args)
+        
+        if "all" in all_sites:
+            del all_sites["all"]
+            
+        self._generated_structures = []
+        
+        molecule_name = Path(molecule_formula).stem if Path(molecule_formula).exists() else molecule_formula
+        print(f"Start generating structures for {molecule_name}...")
+
+        for site_type, site_coords_list in all_sites.items():
+            if requested_positions and site_type not in requested_positions:
+                continue
+            
+            for i, site_coords in enumerate(site_coords_list):
+                adsorbed_structure = self.add_adsorbate(molecule, site_coords, reorient=reorient)
+                
+                self._generated_structures.append({
+                    "structure": adsorbed_structure,
+                    "site_type": site_type,
+                    "index": i,
+                    "molecule": molecule_name # 使用文件名作为前缀
+                })
+
+        print(f"Successfully generated {len(self._generated_structures)} structures.")
+        
+        if plot:
+            self._plot_and_show(plot_params or {}, all_sites)
+
+        return self
+
+    def place_relative(self, reference_slab_source: Union[Structure, str, Path], adsorbate_indices: List[int], adsorbate_anchor_indices: List[int], find_args: dict = None, movable_adsorbate_indices: List[int] = None) -> 'AdsorptionModify':
+        """基于参考结构进行相对位置的吸附放置，自动匹配目标载体的吸附位点。"""
+        if not reference_slab_source:
+            raise ValueError("reference_slab_source is required.")
+            
+        ref_struct, _ = self._resolve_structure_input(reference_slab_source)
+        
+        # 1. 自动寻找目标载体上的吸附位点
+        find_args = (find_args or {}).copy()
+        requested_positions = find_args.pop("positions", []) 
+        
+        if "distance" in find_args:
+            print("提示: 在 relative 模式下，'distance' 参数已被忽略。分子高度将 100% 继承自参考结构。")
+        find_args["distance"] = 0.0 
+        
+        all_sites = self.find_adsorption_sites(**find_args)
+        if "all" in all_sites:
+            del all_sites["all"]
+            
+        self._generated_structures = []
+        print(f"Start placing relative adsorbate...")
+
+        # 2. 遍历所有找到的位点，进行批量相对放置
+        for site_type, site_coords_list in all_sites.items():
+            if requested_positions and site_type not in requested_positions:
+                continue
+            
+            for i, site_coords in enumerate(site_coords_list):
+                final_struct, _ = self._place_relative_adsorbate_logic(
+                    relative_slab_structure=ref_struct,
+                    target_slab_structure=self.slab,
+                    adsorbate_indices=adsorbate_indices,
+                    adsorbate_anchor_indices=adsorbate_anchor_indices,
+                    target_coords=site_coords,  # 此时的 site_coords 是没有被垫高的真实坐标
+                    movable_adsorbate_indices=movable_adsorbate_indices
+                )
+                
+                self._generated_structures.append({
+                    "structure": final_struct,
+                    "site_type": site_type,
+                    "index": i,
+                    "molecule": "relative"
+                })
+        
+        print(f"Successfully placed relative adsorbate on {len(self._generated_structures)} sites.")
+        return self
+
+    def get_structures(self) -> List[Structure]:
+        """获取所有生成的结构列表。"""
+        return [item["structure"].copy() for item in self._generated_structures]
+
+    def save_all(self, filename_prefix: str = "POSCAR", fmt: str = "poscar", as_subdirs: bool = True):
+        """保存所有生成的结构。"""
+        if not self._generated_structures:
+            print("Warning: No structures to save. Call generate() or place_relative() first.")
+            return
+
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        for item in self._generated_structures:
+            struct = item["structure"]
+            # 极简命名：位点类型_序号 (例如: ontop_0)
+            identifier = f"{item['site_type']}_{item['index']}"
+            
+            if as_subdirs:
+                site_dir = self.save_dir / f"{item['molecule']}_{identifier}"
+                site_dir.mkdir(parents=True, exist_ok=True)
+                out_path = site_dir / filename_prefix
+            else:
+                out_path = self.save_dir / f"{filename_prefix}_{identifier}"
+            
+            if fmt.lower() == "poscar":
+                # 显式指定 encoding="utf-8" 解决 PEP 686 警告
+                with open(out_path, mode="wt", encoding="utf-8") as f:
+                    f.write(Poscar(struct).get_string())
+            else:
+                struct.to(filename=str(out_path), fmt=fmt)
+                
+        print(f"Saved {len(self._generated_structures)} structures to {self.save_dir}")
+
+    # ==========================================
+    # 内部辅助方法
+    # ==========================================
 
     def _resolve_structure_input(self, source: Union[Structure, Slab, str, Path]) -> Tuple[Structure, str]:
         if isinstance(source, (Structure, Slab)): 
@@ -68,166 +296,7 @@ class AdsorptionModify(AdsorbateSiteFinder):
 
         raise ValueError(f"Invalid structure source: {source}")
 
-    def _setup_logger(self, output_dir: Path, log_to_file: bool):
-        logger = logging.getLogger(f"AdsMod_{id(self)}")
-        logger.setLevel(logging.INFO)
-        if logger.hasHandlers(): logger.handlers.clear()
-        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
-        ch = logging.StreamHandler()
-        ch.setFormatter(formatter)
-        logger.addHandler(ch)
-        if log_to_file:
-            try:
-                output_dir.mkdir(parents=True, exist_ok=True)
-                fh = logging.FileHandler(output_dir / "adsorption.log", mode='w', encoding='utf-8')
-                fh.setFormatter(formatter)
-                logger.addHandler(fh)
-            except Exception: pass
-        return logger
-
-    @staticmethod
-    def run_from_dict(config: Dict[str, Any]) -> Union[List[Structure], Dict[str, Any]]:
-        """
-        执行流程。
-        """
-        # --- 1. 提取通用参数 ---
-        gen_params = config.get("generate_params", {})
-        
-        init_kwargs = {
-            "slab_source": config.get("target_slab_source"),
-            "save_dir": config.get("save_dir"),
-            "log_to_file": config.get("log_to_file", True),
-            "selective_dynamics": gen_params.get("selective_dynamics", False)
-        }
-        
-        if not init_kwargs["slab_source"]: 
-            raise ValueError("Config must contain 'target_slab_source'.")
-
-        modifier = AdsorptionModify(**init_kwargs)
-        mode = config.get("mode", "analyze")
-        modifier.logger.info(f"Running in mode: {mode}")
-
-        # --- Mode A: Relative Placement ---
-        if mode == "relative":
-            rel_params = config.get("relative_params", {})
-            ref_source = rel_params.get("reference_slab_source")
-            if not ref_source: raise ValueError("Mode 'relative' requires 'reference_slab_source'.")
-            
-            ref_struct, _ = modifier._resolve_structure_input(ref_source)
-            final_struct, _ = modifier.place_relative_adsorbate(
-                relative_slab_structure=ref_struct,
-                target_slab_structure=modifier.slab,
-                adsorbate_indices=rel_params.get("adsorbate_indices"),
-                adsorbate_anchor_indices=rel_params.get("adsorbate_anchor_indices"),
-                slab_target_indices=rel_params.get("slab_target_indices"),
-                movable_adsorbate_indices=rel_params.get("movable_adsorbate_indices"),
-                output_path=None
-            )
-            save_name = config.get("save_filename", "POSCAR_adsorbed.vasp")
-            modifier.save_structure(final_struct, save_name)
-            return [final_struct]
-
-        # --- Mode B: Analyze ---
-        elif mode == "analyze":
-            sites = modifier.find_adsorption_sites()
-            results = {"sites": sites}
-            target_input = config.get("analyze_params", {}).get("describe_site_index")
-            
-            if target_input is not None:
-                flat_sites = sites['ontop'] + sites['bridge'] + sites['hollow']
-                indices_to_process = []
-                if isinstance(target_input, str) and target_input.lower() == "all":
-                    indices_to_process = range(len(flat_sites))
-                elif isinstance(target_input, list):
-                    indices_to_process = target_input
-                elif isinstance(target_input, int):
-                    indices_to_process = [target_input]
-                
-                if len(indices_to_process) > 0:
-                    modifier.logger.info(f"--- Describing {len(indices_to_process)} sites ---")
-                    for idx in indices_to_process:
-                        if 0 <= idx < len(flat_sites):
-                            info = modifier.describe_adsorption_site(modifier.slab, flat_sites[idx])
-                            env_str = ", ".join([f"{k}:{v}" for k, v in info['species_count'].items()])
-                            modifier.logger.info(f"Site #{idx:<3} | Neighbors: {info['neighbors']:<2} | Env: {env_str}")
-                        else:
-                            modifier.logger.warning(f"Site #{idx} is out of range (Total: {len(flat_sites)})")
-
-            if config.get("plot", True):
-                modifier._plot_and_show(config.get("plot_params", {}), sites)
-                
-            return results
-        
-        # --- Mode C: Generate ---
-        elif mode == "generate":
-            molecule_formula = gen_params.get("molecule_formula")
-            if not molecule_formula: raise ValueError("Mode 'generate' requires 'molecule_formula'.")
-            
-            try:
-                molecule = modifier.ase2pmg(molecule_formula)
-            except Exception as e:
-                if Path(molecule_formula).exists():
-                    molecule = Molecule.from_file(molecule_formula)
-                else:
-                    raise ValueError(f"Failed to load molecule '{molecule_formula}': {e}")
-
-            find_args = gen_params.get("find_args", {}).copy()
-            requested_positions = find_args.pop("positions", []) 
-            
-            all_sites = modifier.find_adsorption_sites(**find_args)
-            
-            output_collection_name = f"{molecule_formula}_ads_collection"
-            base_path = modifier.save_dir / output_collection_name
-            base_path.mkdir(parents=True, exist_ok=True)
-            
-            generated_info = []
-            count = 0
-            
-            modifier.logger.info(f"Start generating structures for {molecule_formula}...")
-
-            for site_type, site_coords_list in all_sites.items():
-                if requested_positions and site_type not in requested_positions:
-                    continue
-                
-                for i, site_coords in enumerate(site_coords_list):
-                    site_info = modifier.describe_adsorption_site(modifier.slab, site_coords, radius=3.0, top_n=10)
-                    coord_counts = site_info.get("species_count", {})
-                    adsorbed_structure = modifier.add_adsorbate(
-                        molecule, 
-                        site_coords,
-                        reorient=gen_params.get("reorient", True) 
-                    )
-
-                    coord_parts = []
-                    for species in sorted(coord_counts.keys()):
-                        coord_parts.append(f"{species}{coord_counts[species]}")
-                    coord_str = "_".join(coord_parts) if coord_parts else "no_coord"
-                    
-                    site_dir_name = f"{site_type}_{coord_str}_{i}"
-                    full_site_dir = base_path / site_dir_name
-                    full_site_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    out_path = full_site_dir / "POSCAR"
-                    Poscar(adsorbed_structure).write_file(out_path)
-                    
-                    generated_info.append({
-                        "path": str(out_path),
-                        "site_type": site_type,
-                        "coord_env": coord_str
-                    })
-                    count += 1
-
-            modifier.logger.info(f"Successfully generated {count} structures in {base_path}")
-            
-            if config.get("plot", True):
-                modifier._plot_and_show(config.get("plot_params", {}), all_sites)
-
-            return {"generated_count": count, "output_dir": str(base_path), "details": generated_info}
-
-        return []
-
     def _plot_and_show(self, plot_params: dict, sites: dict):
-        """内部绘图辅助函数"""
         params = plot_params.copy()
         figsize = params.pop("figsize", (6, 6))
         fig, ax = plt.subplots(figsize=figsize)
@@ -235,11 +304,6 @@ class AdsorptionModify(AdsorbateSiteFinder):
         out_p = self.save_dir / "adsorption_sites.png"
         fig.savefig(out_p, dpi=300, bbox_inches='tight')
         plt.show()
-
-    def save_structure(self, structure: Structure, filename: str):
-        out_path = self.save_dir / filename
-        Poscar(structure).write_file(out_path)
-        self.logger.info(f"Saved structure to {out_path}")
 
     @classmethod
     def ase2pmg(cls, adsorption_molecule: str) -> Molecule:
@@ -252,21 +316,18 @@ class AdsorptionModify(AdsorbateSiteFinder):
         coords = [structure[i].coords for i in indices]
         return coords[0] if len(coords) == 1 else np.mean(coords, axis=0)
 
-    def place_relative_adsorbate(self, relative_slab_structure, target_slab_structure, adsorbate_indices, adsorbate_anchor_indices, slab_target_indices, movable_adsorbate_indices=None, output_path=None):
-
+    def _place_relative_adsorbate_logic(self, relative_slab_structure, target_slab_structure, adsorbate_indices, adsorbate_anchor_indices, target_coords, movable_adsorbate_indices=None):
         ads_anchor_coords = self._get_anchor_coords(relative_slab_structure, adsorbate_anchor_indices)
         relative_positions = [relative_slab_structure[i].coords - ads_anchor_coords for i in adsorbate_indices]
         adsorbate_species = [relative_slab_structure[i].specie for i in adsorbate_indices]
-        slab_target_coords = self._get_anchor_coords(target_slab_structure, slab_target_indices)
 
         combined = target_slab_structure.copy()
         adsorbate_indices_in_combined = []
         for i, rel_pos in enumerate(relative_positions):
-            ads_pos = slab_target_coords + rel_pos
+            ads_pos = target_coords + rel_pos # 直接使用传入的坐标
             combined.append(adsorbate_species[i], ads_pos, coords_are_cartesian=True)
             adsorbate_indices_in_combined.append(len(combined) - 1)
         
-        # SD 逻辑
         if target_slab_structure.site_properties.get("selective_dynamics"):
             sd = [list(x) for x in target_slab_structure.site_properties["selective_dynamics"]]
         else:
@@ -279,13 +340,7 @@ class AdsorptionModify(AdsorbateSiteFinder):
                 
         combined.add_site_property("selective_dynamics", sd)
         return combined, adsorbate_indices_in_combined
-
-    def describe_adsorption_site(self, slab, site_coords, radius=3.0, top_n=10):
-        neighbors = slab.get_sites_in_sphere(site_coords, radius, include_index=True)
-        neighbors.sort(key=lambda x: x.nn_distance)
-        species_list = [str(n.species_string) for n in neighbors[:top_n]]
-        species_count = dict(Counter(species_list))
-        return {"neighbors": len(neighbors), "species_count": species_count}
+    
 
     @staticmethod
     def _rotation_matrix_from_vectors(vec1, vec2):
@@ -352,6 +407,7 @@ class AdsorptionModify(AdsorbateSiteFinder):
             found = asf.find_adsorption_sites()
             ads_sites = found["ontop"] + found["bridge"] + found["hollow"]
         elif isinstance(ads_sites, dict):
+            # 这里同样剔除 'all' 键，避免绘图时重复绘制
             ads_sites = ads_sites.get("ontop", []) + ads_sites.get("bridge", []) + ads_sites.get("hollow", [])
 
         if not ads_sites: return ax
