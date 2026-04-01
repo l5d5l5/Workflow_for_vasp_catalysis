@@ -96,10 +96,10 @@ class RelaxRequest(BaseInputRequest):
 # ---------- COHP 新拆分：summary ----------
 class CohpSummaryRequest(BaseInputRequest):
     n_top_bonds: int = Field(default=20, ge=1, le=500)
-    # none / element_pair / bond_index
-    filter_type: Literal["none", "element_pair", "bond_index"] = "none"
+    # 注意：这里将 "bond_index" 改为了 "index"，与后端 CohpAnalysis 保持一致
+    filter_type: Literal["none", "element_pair", "index"] = "none"
     # element_pair: ["Fe","O"] 或 ("Fe","O")
-    # bond_index: ["1","2"] 或 [1,2]
+    # index: ["1","2"] 或 [1,2]
     filter_value: Optional[Union[List[Union[str, int]], Tuple[Union[str, int], Union[str, int]]]] = None
 
 
@@ -242,16 +242,20 @@ async def relax(req: RelaxRequest):
     return run_task("relax", req, get_site_mag=req.get_site_mag)
 
 
-# ---- 新 COHP 拆分路由 ----
+# ============================================================
+# Routes (COHP 部分)
+# ============================================================
 
 @app.post("/api/vasp/cohp/summary")
 async def cohp_summary(req: CohpSummaryRequest):
     kwargs: Dict[str, Any] = {
         "n_top_bonds": req.n_top_bonds,
-        "filter_type": req.filter_type,
+        # 如果前端传 "none"，则转为 None 传给底层分析器
+        "filter_type": None if req.filter_type == "none" else req.filter_type,
     }
     if req.filter_value is not None:
         kwargs["filter_value"] = req.filter_value
+        
     return run_task("cohp_summary", req, **kwargs)
 
 
@@ -262,6 +266,7 @@ async def cohp_curves(req: CohpCurvesRequest):
         kwargs["bond_labels"] = req.bond_labels
     if req.erange is not None:
         kwargs["erange"] = req.erange
+        
     return run_task("cohp_curves", req, **kwargs)
 
 
@@ -271,7 +276,10 @@ async def cohp_export(req: CohpExportRequest):
         "export_type": req.export_type,
         "bond_label": req.bond_label,
         "include_orbitals": req.include_orbitals,
+        # 强制指定 export_format 为 csv，使底层返回 df.to_dict(orient="list") 供前端拼接
+        "export_format": "csv" 
     }
     if req.erange is not None:
         kwargs["erange"] = req.erange
+        
     return run_task("cohp_export", req, **kwargs)
