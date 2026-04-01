@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>晶体轨道 (COHP) 分析 - Catalyst Workbench</title>
+    
+    <!-- 引入依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* ── 基础变量与重置 (来自新 UI 框架) ── */
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+            --green: #18a957;
+            --green2: #e7f7ee;
+            --shadow: 0 8px 24px rgba(17,24,39,.08);
+            --radius: 14px;
+            --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: var(--sans); color: var(--text); font-size: 13px; }
+        
+        /* ── 整体布局 ── */
+        .app { display: flex; height: 100vh; min-height: 860px; }
+
+        /* ── 左侧边栏 (Sidebar) ── */
+        .sidebar {
+            width: 260px;
+            background: var(--card);
+            border-right: 1px solid var(--line);
+            padding: 18px 14px;
+            flex: 0 0 auto;
+            overflow-y: auto;
+        }
+        .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+        .logo {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--green), #28d17a);
+            box-shadow: 0 10px 20px rgba(24,169,87,.22);
+            display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;
+        }
+        .brand .name { font-weight: 900; font-size: 14px; }
+        .brand .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        
+        .navTitle { font-size: 12px; color: var(--muted); margin: 14px 10px 6px; }
+        .nav a {
+            display: flex; align-items: center; text-decoration: none; color: var(--text);
+            padding: 10px 10px; border-radius: 12px; border: 1px solid transparent;
+            margin-bottom: 6px; font-size: 13px; transition: all 0.2s;
+        }
+        .nav a.active { background: var(--green2); border-color: #c8efd8; color: #0f6c39; font-weight: 800; }
+        .nav a:hover:not(.active) { background: #f9fafb; }
+
+        /* ── 右侧主体 (Main) ── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        
+        /* ── 顶部导航栏 (Topbar) ── */
+        .topbar {
+            height: 62px; background: var(--card); border-bottom: 1px solid var(--line);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 18px;
+            flex-shrink: 0;
+        }
+        .crumb { font-size: 12px; color: var(--muted); }
+        .title { font-size: 16px; font-weight: 900; margin-top: 2px; }
+        .right { display: flex; gap: 10px; align-items: center; }
+        .pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 12px; color: var(--muted); }
+        
+        /* 按钮样式 */
+        .btn {
+            padding: 10px 12px; border-radius: 12px; border: 1px solid #c8efd8;
+            background: var(--green); color: #fff; font-weight: 900;
+            box-shadow: 0 10px 18px rgba(24,169,87,.18); font-size: 12px; cursor: pointer; transition: all 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary { background: #fff; color: var(--text); border-color: var(--line); box-shadow: none; }
+        .btn.secondary:hover { background: #f9fafb; }
+
+        /* ── 内容区域 (Content) ── */
+        .content { padding: 18px; height: calc(100vh - 62px); min-height: 0; overflow-y: auto; background: var(--bg); }
+        
+        /* ── 功能专属补充样式 ── */
+        [x-cloak] { display: none !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body x-data="cohpApp()">
+
+<div class="app">
+    <!-- ═══ 左侧边栏 (Sidebar) ═══ -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="logo">C</div>
+            <div>
+                <div class="name">化学计算AI平台</div>
+                <div class="sub">Catalyst Workbench</div>
+            </div>
+        </div>
+        <div class="nav">
+            <div class="navTitle">平台主页</div>
+            
+            <div class="navTitle">智能模型</div>
+            
+            <div class="navTitle">催化剂结构</div>
+            <a href="#">晶体结构</a>
+            <a href="#">表面结构</a>
+            <a href="#">吸附结构</a>
+            <a href="#">纳米颗粒</a>
+            <a href="#">溶剂化结构</a>
+            
+            <div class="navTitle">催化剂性能</div>
+            <a href="#">结构优化</a>
+            <a href="#">电子结构</a>
+            <a href="#">过渡态</a>
+
+            <div class="navTitle">数据分析</div>
+            <a href="#">结构优化分析</a>
+            <a href="#">态密度 (DOS) 分析</a>
+            <!-- 激活 COHP 分析 -->
+            <a class="active" href="#">晶体轨道 (COHP)</a>
+        </div>
+    </aside>
+
+    <!-- ═══ 右侧主体 (Main) ═══ -->
+    <main class="main">
+        <!-- 顶部栏 -->
+        <div class="topbar">
+            <div>
+                <!-- 更新面包屑导航 -->
+                <div class="crumb">数据分析 / 晶体轨道 (COHP)</div>
+                <div class="title">晶体轨道 (COHP) 分析</div>
+            </div>
+            <div class="right">
+                <button class="btn secondary flex items-center gap-2"><i data-lucide="bell" class="w-4 h-4"></i> 消息</button>
+                <div class="pill font-mono">User_01 / Online</div>
+            </div>
+        </div>
+        
+        <!-- 内容区 -->
+        <div class="content">
+            
+            <!-- ！！！以下为 COHP 分析功能模块代码 ！！！ -->
+            <div class="max-w-7xl mx-auto space-y-6 pb-10">
+                
+                <!-- 1. 顶部控制面板 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <h1 class="text-xl font-bold flex items-center gap-2 text-slate-900">
+                            <i data-lucide="link" class="text-emerald-600"></i> LOBSTER COHP / ICOHP 分析
+                        </h1>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row gap-4 items-end">
+                        <div class="flex-1 w-full max-w-xl space-y-2">
+                            <label class="text-sm font-bold text-slate-700">LOBSTER 输出目录路径 (Output Directory)</label>
+                            <div class="relative flex items-center">
+                                <i data-lucide="folder" class="w-4 h-4 absolute left-3 text-slate-400"></i>
+                                <input type="text" x-model="inputValue" @keydown.enter="loadIcohpData" 
+                                       class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm transition-colors font-mono" 
+                                       placeholder="例如: /data/vasp/VO2/lobster_calc">
+                            </div>
+                        </div>
+                        <button @click="loadIcohpData" :disabled="isLoading"
+                                class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors flex items-center gap-2 disabled:opacity-70 h-[42px] shadow-sm shadow-emerald-600/20 border-none cursor-pointer">
+                            <i data-lucide="database" class="w-4 h-4" x-show="!isLoading"></i>
+                            <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isLoading" x-cloak></i>
+                            <span x-text="isLoading ? '解析中...' : '加载数据'"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 主体内容区：左侧表格 + 右侧图表 -->
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6" x-show="hasData" x-cloak>
+                    
+                    <!-- 2. 左侧：ICOHP 汇总表与筛选器 -->
+                    <div class="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[650px]">
+                        <div class="bg-slate-50 px-4 py-3 border-b border-slate-200 rounded-t-xl">
+                            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2 mb-3">
+                                <i data-lucide="filter" class="w-4 h-4 text-emerald-500"></i> 筛选化学键
+                            </h3>
+                            
+                            <!-- 筛选器面板 -->
+                            <div class="space-y-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-bold text-slate-500 w-10">元素:</span>
+                                    <input type="text" x-model="filters.elem1" @input="applyFilter" placeholder="例如 V" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="text" x-model="filters.elem2" @input="applyFilter" placeholder="例如 O" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-bold text-slate-500 w-10">序号:</span>
+                                    <input type="number" x-model="filters.idx1" @input="applyFilter" placeholder="最小" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="number" x-model="filters.idx2" @input="applyFilter" placeholder="最大" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 列表表头 -->
+                        <div class="grid grid-cols-12 gap-1 px-3 py-2 bg-white border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                            <div class="col-span-3">化学键</div>
+                            <div class="col-span-2">键长(Å)</div>
+                            <div class="col-span-2 text-right" title="Spin Up ICOHP">上旋</div>
+                            <div class="col-span-2 text-right" title="Spin Down ICOHP">下旋</div>
+                            <div class="col-span-3 text-right">平均总和(eV)</div>
+                        </div>
+
+                        <!-- 列表内容 -->
+                        <div class="overflow-y-auto flex-1 p-2">
+                            <template x-if="filteredList.length === 0">
+                                <div class="text-center py-8 text-slate-400 text-sm">没有符合筛选条件的化学键。</div>
+                            </template>
+                            
+                            <div class="space-y-1">
+                                <template x-for="bond in filteredList" :key="bond.bond_label">
+                                    <div @click="selectBond(bond)" 
+                                         class="grid grid-cols-12 gap-1 px-2 py-2.5 rounded-lg cursor-pointer transition-all border border-transparent items-center"
+                                         :class="selectedBond?.bond_label === bond.bond_label ? 'bg-emerald-50 border-emerald-200 shadow-sm' : 'hover:bg-slate-50'">
+                                        <div class="col-span-3 flex flex-col justify-center">
+                                            <span class="font-bold text-slate-800 text-sm" x-text="`${bond.atom1}-${bond.atom2}`"></span>
+                                            <span class="text-[10px] text-slate-400" x-text="`序号: ${bond.bond_label}`"></span>
+                                        </div>
+                                        <div class="col-span-2 text-xs text-slate-600 font-mono" x-text="bond.length_Ang ? bond.length_Ang.toFixed(3) : '-'"></div>
+                                        
+                                        <!-- Spin Up -->
+                                        <div class="col-span-2 text-right text-xs font-mono" 
+                                             :class="bond.icohp_up < 0 ? 'text-blue-600' : 'text-red-600'"
+                                             x-text="bond.icohp_up ? bond.icohp_up.toFixed(3) : '-'"></div>
+                                        
+                                        <!-- Spin Down -->
+                                        <div class="col-span-2 text-right text-xs font-mono" 
+                                             :class="bond.icohp_down < 0 ? 'text-blue-600' : 'text-red-600'"
+                                             x-text="bond.icohp_down ? bond.icohp_down.toFixed(3) : '-'"></div>
+                                        
+                                        <!-- Total (Average) -->
+                                        <div class="col-span-3 text-right text-sm font-bold font-mono" 
+                                             :class="bond.icohp_total < 0 ? 'text-emerald-700' : 'text-rose-700'"
+                                             x-text="bond.icohp_total ? bond.icohp_total.toFixed(3) : '-'"></div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 右侧：COHP 曲线图 -->
+                    <div class="lg:col-span-7 bg-white p-5 rounded-xl shadow-sm border border-slate-200 relative flex flex-col h-[650px]">
+                        
+                        <!-- 图表头部控制区 -->
+                        <div class="flex justify-between items-center mb-4">
+                            <div>
+                                <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                                    <i data-lucide="activity" class="w-5 h-5 text-emerald-500"></i> 
+                                    -COHP 曲线: 
+                                    <span class="text-emerald-600" x-text="selectedBond ? `${selectedBond.atom1} - ${selectedBond.atom2} (序号: ${selectedBond.bond_label})` : '未选择'"></span>
+                                </h3>
+                                <p class="text-xs text-slate-500 mt-1 font-medium">
+                                    右侧 (正值) = 成键 (Bonding) | 左侧 (负值) = 反键 (Antibonding)
+                                </p>
+                            </div>
+                            
+                            <button @click="showExportModal = true" :disabled="!selectedBond"
+                                    class="px-4 py-2 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 text-sm font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer">
+                                <i data-lucide="download" class="w-4 h-4"></i> 导出数据
+                            </button>
+                        </div>
+
+                        <!-- ECharts 容器 -->
+                        <div id="cohpChart" class="w-full flex-1 min-h-[400px]"></div>
+                    </div>
+                </div>
+
+                <!-- 4. 导出选项 Modal -->
+                <div x-show="showExportModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
+                    <div class="bg-white rounded-2xl shadow-xl border border-slate-200 p-6 w-full max-w-md" @click.away="if(!isDownloading) showExportModal = false">
+                        <div class="flex justify-between items-center mb-4">
+                            <h3 class="text-lg font-bold text-slate-900">导出 COHP 数据</h3>
+                            <button @click="showExportModal = false" :disabled="isDownloading" class="text-slate-400 hover:text-slate-600 disabled:opacity-50 bg-transparent border-none cursor-pointer"><i data-lucide="x" class="w-5 h-5"></i></button>
+                        </div>
+                        
+                        <p class="text-sm text-slate-600 mb-4">
+                            您即将下载以下化学键的 COHP 数据：<strong class="text-emerald-600" x-text="selectedBond?.atom1 + '-' + selectedBond?.atom2"></strong>。
+                        </p>
+
+                        <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 mb-6">
+                            <label class="flex items-start gap-3 cursor-pointer">
+                                <div class="pt-0.5">
+                                    <input type="checkbox" x-model="includeOrbitals" :disabled="isDownloading" class="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500">
+                                </div>
+                                <div>
+                                    <p class="text-sm font-bold text-slate-800">包含轨道分辨数据</p>
+                                    <p class="text-xs text-slate-500 mt-1">勾选此项以获取详细的轨道贡献数据（如 s, p, d 轨道）。这需要从服务器获取额外数据。</p>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div class="flex justify-end gap-3">
+                            <button @click="showExportModal = false" :disabled="isDownloading" class="px-4 py-2 text-sm font-bold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50 border-none cursor-pointer">
+                                取消
+                            </button>
+                            <button @click="executeDownload" :disabled="isDownloading" class="px-4 py-2 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex items-center gap-2 disabled:opacity-70 border-none cursor-pointer">
+                                <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isDownloading" x-cloak></i>
+                                <i data-lucide="download" class="w-4 h-4" x-show="!isDownloading"></i>
+                                <span x-text="isDownloading ? '处理中...' : '下载 CSV'"></span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- ！！！以上为 COHP 分析功能模块代码 ！！！ -->
+
+        </div>
+    </main>
+</div>
+
+<script>
+    function cohpApp() {
+        return {
+            inputValue: '',
+            isLoading: false,
+            isDownloading: false,
+            hasData: false,
+            
+            fullIcohpList: [],    
+            filteredList: [],     
+            cohpCurvesData: {},   
+            
+            selectedBond: null,
+            showExportModal: false,
+            includeOrbitals: false,
+            
+            filters: { elem1: '', elem2: '', idx1: '', idx2: '' },
+            chartInstance: null,
+
+            init() {
+                setTimeout(() => lucide.createIcons(), 100);
+                window.addEventListener('resize', () => {
+                    if (this.chartInstance) this.chartInstance.resize();
+                });
+            },
+
+            async loadIcohpData() {
+                this.isLoading = true;
+                
+                // 模拟网络延迟
+                await new Promise(resolve => setTimeout(resolve, 800));
+                
+                try {
+                    // 生成包含原子序数和自旋分量的 Mock 数据
+                    const energies = Array.from({length: 201}, (_, i) => -10 + i * 0.1);
+                    
+                    const mockSummary = [
+                        { bond_label: "244", atom1: "V1", atom2: "O2", length_Ang: 1.852, icohp_up: -2.100, icohp_down: -2.115, icohp_total: -2.1075 },
+                        { bond_label: "245", atom1: "V1", atom2: "O3", length_Ang: 1.910, icohp_up: -1.920, icohp_down: -1.932, icohp_total: -1.926 },
+                        { bond_label: "12",  atom1: "V1", atom2: "V2", length_Ang: 2.851, icohp_up: -0.620, icohp_down: -0.620, icohp_total: -0.620 },
+                        { bond_label: "15",  atom1: "V2", atom2: "V3", length_Ang: 2.910, icohp_up: -0.490, icohp_down: -0.490, icohp_total: -0.490 },
+                        { bond_label: "301", atom1: "O1", atom2: "O2", length_Ang: 2.450, icohp_up: -0.075, icohp_down: -0.075, icohp_total: -0.075 }
+                    ];
+
+                    let mockCurves = { "energy_eV": energies };
+                    
+                    mockSummary.forEach(b => {
+                        const intensity = Math.abs(b.icohp_total) * 2; 
+                        mockCurves[`${b.bond_label}_up`] = energies.map(e => {
+                            const val = (Math.sin(e) * Math.exp(-Math.abs(e)/4)) * intensity;
+                            return e < 0 ? -Math.abs(val) - 0.2 : Math.abs(val) + 0.1; 
+                        });
+                        mockCurves[`${b.bond_label}_down`] = energies.map(e => {
+                            const val = (Math.sin(e) * Math.exp(-Math.abs(e)/4)) * intensity * 0.8;
+                            return e < 0 ? -Math.abs(val) - 0.1 : Math.abs(val) + 0.05; 
+                        });
+                    });
+
+                    this.fullIcohpList = mockSummary;
+                    this.filteredList = this.fullIcohpList;
+                    this.cohpCurvesData = mockCurves;
+                    this.hasData = true;
+                    
+                    this.$nextTick(() => {
+                        if (!this.chartInstance) {
+                            this.chartInstance = echarts.init(document.getElementById('cohpChart'));
+                        }
+                        this.chartInstance.resize(); 
+                        
+                        if (this.filteredList.length > 0) {
+                            this.selectBond(this.filteredList[0]);
+                        }
+                        lucide.createIcons();
+                    });
+                } catch (error) {
+                    alert("加载数据出错: " + error.message);
+                } finally {
+                    this.isLoading = false;
+                }
+            },
+
+            applyFilter() {
+                const e1 = this.filters.elem1.trim().toLowerCase();
+                const e2 = this.filters.elem2.trim().toLowerCase();
+                const i1 = this.filters.idx1;
+                const i2 = this.filters.idx2;
+
+                this.filteredList = this.fullIcohpList.filter(bond => {
+                    let matchElem = true;
+                    if (e1 || e2) {
+                        const b1 = bond.atom1.replace(/[0-9]/g, '').toLowerCase();
+                        const b2 = bond.atom2.replace(/[0-9]/g, '').toLowerCase();
+                        
+                        const matchNormal = (!e1 || b1.includes(e1)) && (!e2 || b2.includes(e2));
+                        const matchReverse = (!e1 || b2.includes(e1)) && (!e2 || b1.includes(e2));
+                        matchElem = matchNormal || matchReverse;
+                    }
+
+                    let matchIdx = true;
+                    if (i1 || i2) {
+                        const idx = parseInt(bond.bond_label);
+                        if (i1 && idx < parseInt(i1)) matchIdx = false;
+                        if (i2 && idx > parseInt(i2)) matchIdx = false;
+                    }
+
+                    return matchElem && matchIdx;
+                });
+            },
+
+            selectBond(bond) {
+                this.selectedBond = bond;
+                const label = bond.bond_label;
+                
+                const energies = this.cohpCurvesData['energy_eV'] || [];
+                const upCurve = this.cohpCurvesData[`${label}_up`] || [];
+                const downCurve = this.cohpCurvesData[`${label}_down`] || [];
+                
+                if (energies.length === 0 || upCurve.length === 0) {
+                    console.warn("缺少该化学键的曲线数据", label);
+                    return;
+                }
+                
+                this.renderChart(energies, upCurve, downCurve, `${bond.atom1}-${bond.atom2}`);
+            },
+
+            renderChart(energies, upCurve, downCurve, title) {
+                const upData = energies.map((e, i) => [e, -upCurve[i]]);
+                
+                const markLineConfig = {
+                    symbol: ['none', 'none'],
+                    silent: true,
+                    data: [
+                        // 加粗的 y=0 实线 (成键/反键分界线)
+                        { yAxis: 0, lineStyle: { color: '#475569', type: 'solid', width: 2 } },
+                        // 费米面 x=0 虚线
+                        { xAxis: 0, lineStyle: { color: '#94a3b8', type: 'dashed', width: 1 } }
+                    ]
+                };
+
+                const series = [{
+                    name: '上旋 (-COHP)',
+                    type: 'line',
+                    showSymbol: false,
+                    lineStyle: { width: 2, color: '#3b82f6' }, // 保持蓝色
+                    data: upData,
+                    markLine: markLineConfig
+                }];
+
+                if (downCurve && downCurve.length > 0) {
+                    const downData = energies.map((e, i) => [e, -downCurve[i]]);
+                    series.push({
+                        name: '下旋 (-COHP)',
+                        type: 'line',
+                        showSymbol: false,
+                        lineStyle: { width: 2, color: '#ef4444' }, // 保持红色
+                        data: downData
+                    });
+                }
+
+                const option = {
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                    legend: { top: 10 },
+                    grid: { left: '10%', right: '5%', bottom: '10%', top: '15%' },
+                    xAxis: {
+                        type: 'value',
+                        name: '能量 (eV)',
+                        nameLocation: 'middle',
+                        nameGap: 30,
+                        axisLine: { onZero: false, lineStyle: { color: '#64748b' } },
+                        splitLine: { show: false }
+                    },
+                    yAxis: {
+                        type: 'value',
+                        name: '-COHP',
+                        axisLine: { show: false },
+                        splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } }
+                    },
+                    series: series
+                };
+
+                this.chartInstance.setOption(option, true);
+            },
+
+            async executeDownload() {
+                if (!this.selectedBond) return;
+                const label = this.selectedBond.bond_label;
+                let csvDataDict = {};
+                this.isDownloading = true;
+
+                try {
+                    if (!this.includeOrbitals) {
+                        csvDataDict = {
+                            "Energy(eV)": this.cohpCurvesData['energy_eV'],
+                            [`${label}_Up`]: this.cohpCurvesData[`${label}_up`],
+                            [`${label}_Down`]: this.cohpCurvesData[`${label}_down`]
+                        };
+                    } else {
+                        await new Promise(resolve => setTimeout(resolve, 1200)); 
+                        const energies = this.cohpCurvesData['energy_eV'];
+                        const baseUp = this.cohpCurvesData[`${label}_up`];
+                        const baseDown = this.cohpCurvesData[`${label}_down`];
+                        
+                        csvDataDict = {
+                            "Energy(eV)": energies,
+                            [`${label}_Up`]: baseUp,
+                            [`${label}_Down`]: baseDown,
+                            [`${label}_s-s_Up`]: baseUp.map(v => v * 0.2),
+                            [`${label}_p-d_Up`]: baseUp.map(v => v * 0.8),
+                            [`${label}_s-s_Down`]: baseDown.map(v => v * 0.2),
+                            [`${label}_p-d_Down`]: baseDown.map(v => v * 0.8),
+                        };
+                    }
+
+                    const filename = `COHP_${this.selectedBond.atom1}_${this.selectedBond.atom2}_Bond${label}.csv`;
+                    this.generateAndDownloadCSV(csvDataDict, filename);
+                    this.showExportModal = false;
+                    this.includeOrbitals = false; 
+
+                } catch (error) {
+                    alert("下载失败: " + error.message);
+                } finally {
+                    this.isDownloading = false;
+                }
+            },
+
+            generateAndDownloadCSV(dataDict, filename) {
+                const keys = Object.keys(dataDict);
+                if (keys.length === 0) return;
+                const numRows = dataDict[keys[0]].length;
+                let csvContent = keys.join(",") + "\n";
+                for (let i = 0; i < numRows; i++) {
+                    let row = keys.map(key => {
+                        const val = dataDict[key][i];
+                        return val !== undefined && val !== null ? val.toFixed(4) : '';
+                    });
+                    csvContent += row.join(",") + "\n";
+                }
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                const url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                link.setAttribute("download", filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+        }
+    }
+</script>
+</body>
+</html>

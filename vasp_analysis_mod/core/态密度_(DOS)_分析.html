@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>态密度 (DOS) 分析 - Catalyst Workbench</title>
+    
+    <!-- 引入依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* ── 基础变量与重置 (来自新 UI 框架) ── */
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+            --green: #18a957;
+            --green2: #e7f7ee;
+            --shadow: 0 8px 24px rgba(17,24,39,.08);
+            --radius: 14px;
+            --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: var(--sans); color: var(--text); font-size: 13px; }
+        
+        /* ── 整体布局 ── */
+        .app { display: flex; height: 100vh; min-height: 860px; }
+
+        /* ── 左侧边栏 (Sidebar) ── */
+        .sidebar {
+            width: 260px;
+            background: var(--card);
+            border-right: 1px solid var(--line);
+            padding: 18px 14px;
+            flex: 0 0 auto;
+            overflow-y: auto;
+        }
+        .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+        .logo {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--green), #28d17a);
+            box-shadow: 0 10px 20px rgba(24,169,87,.22);
+            display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;
+        }
+        .brand .name { font-weight: 900; font-size: 14px; }
+        .brand .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        
+        .navTitle { font-size: 12px; color: var(--muted); margin: 14px 10px 6px; }
+        .nav a {
+            display: flex; align-items: center; text-decoration: none; color: var(--text);
+            padding: 10px 10px; border-radius: 12px; border: 1px solid transparent;
+            margin-bottom: 6px; font-size: 13px; transition: all 0.2s;
+        }
+        .nav a.active { background: var(--green2); border-color: #c8efd8; color: #0f6c39; font-weight: 800; }
+        .nav a:hover:not(.active) { background: #f9fafb; }
+
+        /* ── 右侧主体 (Main) ── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        
+        /* ── 顶部导航栏 (Topbar) ── */
+        .topbar {
+            height: 62px; background: var(--card); border-bottom: 1px solid var(--line);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 18px;
+            flex-shrink: 0;
+        }
+        .crumb { font-size: 12px; color: var(--muted); }
+        .title { font-size: 16px; font-weight: 900; margin-top: 2px; }
+        .right { display: flex; gap: 10px; align-items: center; }
+        .pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 12px; color: var(--muted); }
+        
+        /* 按钮样式 */
+        .btn {
+            padding: 10px 12px; border-radius: 12px; border: 1px solid #c8efd8;
+            background: var(--green); color: #fff; font-weight: 900;
+            box-shadow: 0 10px 18px rgba(24,169,87,.18); font-size: 12px; cursor: pointer; transition: all 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary { background: #fff; color: var(--text); border-color: var(--line); box-shadow: none; }
+        .btn.secondary:hover { background: #f9fafb; }
+
+        /* ── 内容区域 (Content) ── */
+        /* 修改了 overflow 为 auto 以支持 DOS 分析页面的滚动 */
+        .content { padding: 18px; height: calc(100vh - 62px); min-height: 0; overflow-y: auto; background: var(--bg); }
+        
+        /* ── DOS 分析专属补充样式 ── */
+        [x-cloak] { display: none !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .chart-container { position: relative; flex: 1; width: 100%; min-height: 500px; }
+        .chart-container > div { position: absolute; inset: 0; }
+    </style>
+</head>
+<body x-data="dosApp()">
+
+<div class="app">
+    <!-- ═══ 左侧边栏 (Sidebar) ═══ -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="logo">C</div>
+            <div>
+                <div class="name">化学计算AI平台</div>
+                <div class="sub">Catalyst Workbench</div>
+            </div>
+        </div>
+        <div class="nav">
+            <div class="navTitle">平台主页</div>
+            
+            <div class="navTitle">智能模型</div>
+            
+            <div class="navTitle">催化剂结构</div>
+            <a href="#">晶体结构</a>
+            <a href="#">表面结构</a>
+            <a href="#">吸附结构</a>
+            <a href="#">纳米颗粒</a>
+            <a href="#">溶剂化结构</a>
+            
+            <!-- 恢复原有的催化剂性能菜单 -->
+            <div class="navTitle">催化剂性能</div>
+            <a href="#">结构优化</a>
+            <a href="#">电子结构</a>
+            <a href="#">过渡态</a>
+
+            <!-- 新增的数据分析独立菜单 -->
+            <div class="navTitle">数据分析</div>
+            <a href="#">结构优化分析</a>
+            <a class="active" href="#">态密度 (DOS) 分析</a>
+            <a href="#">晶体轨道 (COHP)</a>
+        </div>
+    </aside>
+
+    <!-- ═══ 右侧主体 (Main) ═══ -->
+    <main class="main">
+        <!-- 顶部栏 -->
+        <div class="topbar">
+            <div>
+                <!-- 更新面包屑导航 -->
+                <div class="crumb">数据分析 / 态密度 (DOS) 分析</div>
+                <div class="title">态密度 (DOS) 分析</div>
+            </div>
+            <div class="right">
+                <button class="btn secondary flex items-center gap-2"><i data-lucide="bell" class="w-4 h-4"></i> 消息</button>
+                <div class="pill font-mono">User_01 / Online</div>
+            </div>
+        </div>
+        
+        <!-- 内容区 -->
+        <div class="content">
+            
+            <!-- ！！！以下为原封不动的 DOS 分析功能模块代码 ！！！ -->
+            <div class="max-w-7xl mx-auto space-y-6 pb-10">
+                
+                <!-- 1. 顶部数据源与结构加载 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <h1 class="text-xl font-bold flex items-center gap-2 text-slate-900">
+                            <i data-lucide="layers" class="text-emerald-600"></i> VASP 态密度 (DOS) 分析
+                        </h1>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row gap-4 items-end">
+                        <div class="flex-1 w-full max-w-xl space-y-2">
+                            <label class="text-sm font-bold text-slate-700">工作目录路径 (Work Directory)</label>
+                            <div class="relative flex items-center">
+                                <i data-lucide="folder" class="w-4 h-4 absolute left-3 text-slate-400"></i>
+                                <input type="text" x-model="workDir" @input="structureLoaded = false" 
+                                       class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm transition-colors font-mono" 
+                                       placeholder="例如: /home/user/vasp_calcs/dos_01">
+                            </div>
+                        </div>
+                        <button @click="loadStructure" :disabled="isLoadingStruct || !workDir"
+                                class="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition-colors flex items-center gap-2 disabled:opacity-70 h-[42px] border-none cursor-pointer">
+                            <i data-lucide="microscope" class="w-4 h-4" x-show="!isLoadingStruct"></i>
+                            <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isLoadingStruct" style="display: none;"></i>
+                            <span x-text="isLoadingStruct ? '读取中...' : '加载结构数据'"></span>
+                        </button>
+                    </div>
+
+                    <!-- 结构信息展示条 -->
+                    <div x-show="structureLoaded" style="display: none;" class="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-6 text-sm">
+                        <div class="flex items-center gap-2 text-emerald-800 font-bold">
+                            <i data-lucide="check-circle" class="w-4 h-4"></i> 结构已加载
+                        </div>
+                        <div class="text-slate-600">
+                            总原子数: <span class="font-bold text-slate-900 font-mono" x-text="structure.totalAtoms"></span>
+                        </div>
+                        <div class="text-slate-600">
+                            包含元素: <span class="font-bold text-slate-900 font-mono" x-text="structure.elements.join(', ')"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 2. 曲线构建器 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5" :class="{'opacity-50 pointer-events-none': !structureLoaded}">
+                    <div class="flex items-center justify-between mb-4 border-b border-slate-100 pb-4">
+                        <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                            <i data-lucide="plus-circle" class="w-5 h-5 text-emerald-500"></i> 曲线构建器
+                        </h3>
+                        
+                        <div class="flex items-center gap-4">
+                            <div class="flex items-center gap-2 text-sm">
+                                <label class="font-bold text-slate-700">能量范围 (eV):</label>
+                                <input type="number" x-model="eMin" class="w-16 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-center font-mono">
+                                <span class="text-slate-400">至</span>
+                                <input type="number" x-model="eMax" class="w-16 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-center font-mono">
+                            </div>
+                            <label class="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700 border-l border-slate-200 pl-4">
+                                <input type="checkbox" x-model="showTDOS" class="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4">
+                                显示总态密度 (TDOS)
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap items-start gap-6 bg-emerald-50/50 border border-emerald-100 rounded-xl p-4">
+                        
+                        <div class="space-y-2">
+                            <label class="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">投影模式</label>
+                            <div class="flex bg-white border border-slate-200 rounded-lg p-1">
+                                <button @click="builder.mode = 'element'" :class="builder.mode === 'element' ? 'bg-emerald-50 text-emerald-700 font-bold shadow-sm' : 'text-slate-500 hover:bg-slate-50'" class="px-4 py-1.5 rounded-md text-sm transition-all border-none cursor-pointer">
+                                    按元素
+                                </button>
+                                <button @click="builder.mode = 'site'" :class="builder.mode === 'site' ? 'bg-emerald-50 text-emerald-700 font-bold shadow-sm' : 'text-slate-500 hover:bg-slate-50'" class="px-4 py-1.5 rounded-md text-sm transition-all border-none cursor-pointer">
+                                    按特定位点
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="w-48 space-y-2">
+                            <label class="block text-[11px] font-bold text-slate-500 uppercase tracking-wider" x-text="builder.mode === 'element' ? '选择元素' : '原子序号'"></label>
+                            
+                            <select x-show="builder.mode === 'element'" x-model="builder.element" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 cursor-pointer">
+                                <template x-for="el in structure.elements" :key="el">
+                                    <option :value="el" x-text="el"></option>
+                                </template>
+                            </select>
+
+                            <div x-show="builder.mode === 'site'" class="relative">
+                                <input type="number" x-model="builder.site" @input="validateSite" placeholder="例如: 15"
+                                       class="w-full px-3 py-2 bg-white border rounded-lg text-sm focus:ring-2 focus:outline-none transition-colors"
+                                       :class="siteError ? 'border-rose-500 focus:ring-rose-500' : 'border-slate-200 focus:ring-emerald-500'">
+                                <div x-show="siteError" class="absolute top-full left-0 mt-1 text-[11px] text-rose-500 font-bold whitespace-nowrap" x-text="siteError"></div>
+                            </div>
+                        </div>
+
+                        <div class="w-48 space-y-2">
+                            <label class="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">选择轨道</label>
+                            <select x-model="builder.orbital" class="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 cursor-pointer">
+                                <optgroup label="s 轨道"><option value="s">s</option></optgroup>
+                                <optgroup label="p 轨道">
+                                    <option value="p">p (总和)</option>
+                                    <option value="p_y">p_y</option><option value="p_z">p_z</option><option value="p_x">p_x</option>
+                                </optgroup>
+                                <optgroup label="d 轨道">
+                                    <option value="d" selected>d (总和)</option>
+                                    <option value="d_xy">d_xy</option><option value="d_yz">d_yz</option>
+                                    <option value="d_z2">d_z2</option><option value="d_xz">d_xz</option><option value="d_x2-y2">d_x2-y2</option>
+                                </optgroup>
+                            </select>
+                        </div>
+
+                        <div class="flex-1 flex justify-end items-end h-[60px]">
+                            <button @click="addCurve" :disabled="!canAddCurve"
+                                    class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed border-none cursor-pointer">
+                                <i data-lucide="plus" class="w-4 h-4"></i> 添加曲线
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 已选曲线标签 -->
+                    <div class="mt-4 flex flex-wrap gap-2" x-show="curves.length > 0">
+                        <template x-for="(curve, index) in curves" :key="curve.id">
+                            <div class="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-bold border"
+                                 :style="`background-color: ${curve.color}15; border-color: ${curve.color}40; color: ${curve.color}`">
+                                <div class="w-2 h-2 rounded-full" :style="`background-color: ${curve.color}`"></div>
+                                <span x-text="curve.label"></span>
+                                <button @click="removeCurve(index)" class="ml-1 hover:opacity-70 transition-opacity border-none bg-transparent cursor-pointer">
+                                    <i data-lucide="x" class="w-3 h-3"></i>
+                               </button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- 3. 运行分析与图表区域 -->
+                <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 relative" :class="{'opacity-50 pointer-events-none': curves.length === 0}">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-bold text-slate-800 flex items-center gap-2">
+                            <i data-lucide="activity" class="w-5 h-5 text-emerald-500"></i> 投影态密度 (自旋极化)
+                        </h3>
+                        <div class="flex gap-3">
+                            <button @click="downloadCSV" :disabled="!hasData" class="px-4 py-2 bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200 text-sm font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer">
+                                <i data-lucide="download" class="w-4 h-4"></i> 导出 CSV
+                            </button>
+                            <button @click="analyze" :disabled="isAnalyzing || curves.length === 0" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-70 border-none cursor-pointer">
+                                <i data-lucide="play" class="w-4 h-4" x-show="!isAnalyzing"></i>
+                                <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isAnalyzing" style="display: none;"></i>
+                                <span x-text="isAnalyzing ? '绘制中...' : '运行分析'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="chart-container">
+                        <div id="dosChart"></div>
+                    </div>
+                </div>
+
+                <!-- 4. 统计数据对比表 -->
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden" x-show="hasData" style="display: none;">
+                    <div class="bg-slate-50 px-5 py-4 border-b border-slate-200 flex justify-between items-center">
+                        <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                            <i data-lucide="table" class="w-4 h-4 text-emerald-500"></i> 轨道统计数据对比
+                        </h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-white border-b border-slate-100">
+                                <tr>
+                                    <th class="px-6 py-3 font-bold text-slate-600">曲线名称</th>
+                                    <th class="px-6 py-3 font-bold text-slate-600">带中心 (eV)</th>
+                                    <th class="px-6 py-3 font-bold text-slate-600">带宽度 (eV)</th>
+                                    <th class="px-6 py-3 font-bold text-slate-600">偏度 (Skewness)</th>
+                                    <th class="px-6 py-3 font-bold text-slate-600">峰度 (Kurtosis)</th>
+                                    <th class="px-6 py-3 font-bold text-emerald-700 bg-emerald-50/50">填充电子数 (e)</th>
+                                    <th class="px-6 py-3 font-bold text-emerald-700 bg-emerald-50/50">填充态比例</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <template x-for="stat in statsData" :key="stat.label">
+                                    <tr class="hover:bg-slate-50 transition-colors">
+                                        <td class="px-6 py-3 font-bold flex items-center gap-2">
+                                            <div class="w-3 h-3 rounded-full" :style="`background-color: ${stat.color}`"></div>
+                                            <span x-text="stat.label"></span>
+                                        </td>
+                                        <td class="px-6 py-3 font-mono text-slate-700" x-text="stat.center.toFixed(3)"></td>
+                                        <td class="px-6 py-3 font-mono text-slate-700" x-text="stat.width.toFixed(3)"></td>
+                                        <td class="px-6 py-3 font-mono text-slate-700" x-text="stat.skewness.toFixed(3)"></td>
+                                        <td class="px-6 py-3 font-mono text-slate-700" x-text="stat.kurtosis.toFixed(3)"></td>
+                                        <td class="px-6 py-3 font-mono font-bold text-emerald-600 bg-emerald-50/20" x-text="stat.filling.toFixed(3)"></td>
+                                        <td class="px-6 py-3 font-mono font-bold text-emerald-600 bg-emerald-50/20" x-text="(stat.fillingRatio * 100).toFixed(1) + '%'"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+            <!-- ！！！以上为原封不动的 DOS 分析功能模块代码 ！！！ -->
+
+        </div>
+    </main>
+</div>
+
+<script>
+    const COLORS = ['#18a957', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
+
+    function dosApp() {
+        return {
+            workDir: '/home/user/vasp_calcs/dos_01',
+            isLoadingStruct: false,
+            structureLoaded: false,
+            structure: { totalAtoms: 0, elements: [] },
+            
+            eMin: -8, eMax: 4, showTDOS: true,
+            builder: { mode: 'element', element: '', site: '', orbital: 'd' },
+            siteError: '',
+            curves: [],
+            
+            isAnalyzing: false, hasData: false, chartInstance: null,
+            statsData: [],
+            
+            // 用于存储图表和导出的真实数据
+            plotData: { energy: [], tdosUp: [], tdosDown: [], curvesData: [] },
+
+            init() {
+                this.$nextTick(() => { lucide.createIcons(); });
+            },
+
+            loadStructure() {
+                if (!this.workDir) return;
+                this.isLoadingStruct = true;
+                setTimeout(() => {
+                    this.structure = { totalAtoms: 72, elements: ['Pd', 'C', 'O'] };
+                    this.builder.element = 'Pd';
+                    this.structureLoaded = true;
+                    this.isLoadingStruct = false;
+                }, 600);
+            },
+
+            validateSite() {
+                if (!this.builder.site) { this.siteError = ''; return; }
+                const val = parseInt(this.builder.site);
+                if (isNaN(val) || val < 1 || val > this.structure.totalAtoms) {
+                    this.siteError = `请输入 1 到 ${this.structure.totalAtoms} 之间的数字`;
+                } else {
+                    this.siteError = '';
+                }
+            },
+
+            get canAddCurve() {
+                if (this.builder.mode === 'element') return !!this.builder.element;
+                return !!this.builder.site && !this.siteError;
+            },
+
+            addCurve() {
+                if (!this.canAddCurve) return;
+                let label = '';
+                if (this.builder.mode === 'element') {
+                    label = `${this.builder.element} (${this.builder.orbital})`;
+                } else {
+                    label = `Atom ${this.builder.site} (${this.builder.orbital})`;
+                }
+
+                if (this.curves.some(c => c.label === label)) return;
+
+                this.curves.push({
+                    id: Date.now(),
+                    label: label,
+                    color: COLORS[this.curves.length % COLORS.length],
+                    config: { ...this.builder }
+                });
+            },
+
+            removeCurve(index) {
+                this.curves.splice(index, 1);
+            },
+
+            analyze() {
+                this.isAnalyzing = true;
+                setTimeout(() => {
+                    this.generateMockStats();
+                    this.generatePlotData(); // 生成图表和下载共用的数据
+                    this.hasData = true;
+                    this.isAnalyzing = false;
+                    
+                    // 确保 DOM 完全展开后再初始化图表
+                    setTimeout(() => {
+                        this.initChart();
+                        lucide.createIcons();
+                    }, 100);
+                }, 1000);
+            },
+
+            generateMockStats() {
+                this.statsData = [];
+                this.curves.forEach((curve) => {
+                    let center = (Math.random() * -3) - 1; 
+                    let width = Math.random() * 2 + 1.5;
+                    let filling = Math.random() * 8 + 1; 
+                    
+                    this.statsData.push({
+                        label: curve.label,
+                        color: curve.color,
+                        center: center,
+                        width: width,
+                        skewness: (Math.random() - 0.5) * 1.5,
+                        kurtosis: Math.random() * 2 + 2,
+                        filling: filling,
+                        fillingRatio: filling / 10.0 
+                    });
+                });
+            },
+
+            // 核心：生成并保存数据，供图表和 CSV 下载使用
+            generatePlotData() {
+                this.plotData = { energy: [], tdosUp: [], tdosDown: [], curvesData: [] };
+                
+                this.curves.forEach(c => {
+                    this.plotData.curvesData.push({ label: c.label, up: [], down: [] });
+                });
+
+                for (let e = this.eMin; e <= this.eMax; e += 0.05) {
+                    let energyVal = parseFloat(e.toFixed(3));
+                    this.plotData.energy.push(energyVal);
+
+                    if (this.showTDOS) {
+                        let val = Math.exp(-Math.pow(e + 2, 2) / 4) * 15 + Math.random() * 2;
+                        this.plotData.tdosUp.push(parseFloat(val.toFixed(3)));
+                        this.plotData.tdosDown.push(parseFloat((-val * 0.9).toFixed(3)));
+                    }
+
+                    this.curves.forEach((curve, i) => {
+                        let center = this.statsData[i].center;
+                        let width = this.statsData[i].width;
+                        let val = Math.exp(-Math.pow(e - center, 2) / width) * 8 + Math.random() * 0.5;
+                        if (e > 0) val *= 0.2; 
+                        
+                        this.plotData.curvesData[i].up.push(parseFloat(val.toFixed(3)));
+                        this.plotData.curvesData[i].down.push(parseFloat((-val * 0.8).toFixed(3)));
+                    });
+                }
+            },
+
+            initChart() {
+                let chartDom = document.getElementById('dosChart');
+                if (!chartDom) return;
+
+                if (!this.chartInstance) {
+                    this.chartInstance = echarts.init(chartDom);
+                    window.addEventListener('resize', () => { 
+                        if(this.chartInstance) this.chartInstance.resize(); 
+                    });
+                }
+
+                let series = [];
+                let legendData = [];
+
+                // 费米能级标记线 (E=0)
+                const fermiLine = {
+                    symbol: ['none', 'none'],
+                    data: [{ xAxis: 0, name: 'Fermi Level' }],
+                    lineStyle: { color: '#ef4444', type: 'dashed', width: 1.5 },
+                    label: { show: false }
+                };
+
+                // 读取保存的 TDOS 数据
+                if (this.showTDOS) {
+                    let tdosUp = this.plotData.energy.map((e, idx) => [e, this.plotData.tdosUp[idx]]);
+                    let tdosDown = this.plotData.energy.map((e, idx) => [e, this.plotData.tdosDown[idx]]);
+                    
+                    series.push(
+                        { name: 'TDOS (Up)', type: 'line', data: tdosUp, symbol: 'none', itemStyle: { color: '#94a3b8' }, lineStyle: { width: 1 }, areaStyle: { opacity: 0.2 }, markLine: fermiLine },
+                        { name: 'TDOS (Down)', type: 'line', data: tdosDown, symbol: 'none', itemStyle: { color: '#94a3b8' }, lineStyle: { width: 1 }, areaStyle: { opacity: 0.2 } }
+                    );
+                    legendData.push('TDOS (Up)', 'TDOS (Down)');
+                }
+
+                // 读取保存的 PDOS 曲线数据
+                this.curves.forEach((curve, i) => {
+                    let pdosUp = this.plotData.energy.map((e, idx) => [e, this.plotData.curvesData[i].up[idx]]);
+                    let pdosDown = this.plotData.energy.map((e, idx) => [e, this.plotData.curvesData[i].down[idx]]);
+                    
+                    let sUp = { name: `${curve.label} (Up)`, type: 'line', data: pdosUp, symbol: 'none', itemStyle: { color: curve.color }, lineStyle: { width: 2 } };
+                    
+                    if (!this.showTDOS && i === 0) {
+                        sUp.markLine = fermiLine;
+                    }
+
+                    series.push(
+                        sUp,
+                        { name: `${curve.label} (Down)`, type: 'line', data: pdosDown, symbol: 'none', itemStyle: { color: curve.color }, lineStyle: { width: 2 } }
+                    );
+                    legendData.push(`${curve.label} (Up)`, `${curve.label} (Down)`);
+                });
+
+                this.chartInstance.setOption({
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                    legend: { data: legendData, top: 0, type: 'scroll' },
+                    grid: { left: '8%', right: '5%', bottom: '10%', top: '15%' },
+                    xAxis: { 
+                        type: 'value', name: '能量 (eV)', nameLocation: 'middle', nameGap: 30,
+                        min: this.eMin, max: this.eMax,
+                        axisLine: { onZero: false, lineStyle: { color: '#64748b' } },
+                        splitLine: { show: false }
+                    },
+                    yAxis: { 
+                        type: 'value', name: 'DOS (states/eV)',
+                        axisLine: { show: true, lineStyle: { color: '#64748b' } },
+                        splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } }
+                    },
+                    series: series
+                }, true);
+            },
+
+            // 核心：真实的 CSV 导出功能
+            downloadCSV() {
+                if (!this.plotData || this.plotData.energy.length === 0) return;
+
+                // 1. 构建表头
+                let headers = ['Energy(eV)'];
+                if (this.showTDOS) {
+                    headers.push('TDOS_Up', 'TDOS_Down');
+                }
+                this.plotData.curvesData.forEach(c => {
+                    headers.push(`${c.label}_Up`, `${c.label}_Down`);
+                });
+
+                // 2. 拼接数据行
+                let csvContent = headers.join(',') + '\n';
+                for (let i = 0; i < this.plotData.energy.length; i++) {
+                    let row = [this.plotData.energy[i]];
+                    if (this.showTDOS) {
+                        row.push(this.plotData.tdosUp[i], this.plotData.tdosDown[i]);
+                    }
+                    this.plotData.curvesData.forEach(c => {
+                        row.push(c.up[i], c.down[i]);
+                    });
+                    csvContent += row.join(',') + '\n';
+                }
+
+                // 3. 触发浏览器下载
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = "dos_analysis_data.csv";
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
+            }
+        }
+    }
+</script>
+</body>
+</html>
