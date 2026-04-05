@@ -5,17 +5,15 @@ Optimized for AI-driven platforms, supporting both Fluent API (chained) and step
 import random
 import math
 import logging
-import itertools
 import numpy as np
 from typing import Optional, Union, Dict, List, Tuple, Sequence, Set
 
 from pymatgen.core import Structure, Element
 from pymatgen.core.lattice import Lattice
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core.operations import SymmOp
 
-from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix
+from .utils.structure_utils import get_atomic_layers, parse_supercell_matrix
 
 class StructureModify:
     """
@@ -456,3 +454,72 @@ class StructureModify:
             # 如果不返回所有步骤，只返回最后一步的结构
             final_paths = all_levels_paths[-1]
             return [self._apply_defects(self._structure, path, dopant_el) for path in final_paths]
+
+    def to_string(self, fmt: str = "poscar") -> str:
+        """
+            将当前结构序列化为字符串。
+            
+            Args:
+                fmt: 'xyz' | 'cif' | 'poscar'
+            
+            Returns:
+                对应格式的字符串内容
+        """
+        structure = self.get_structure()
+        fmt = fmt.lower()
+        
+        if fmt == "xyz":
+            from pymatgen.io.xyz import XYZ
+            return str(XYZ(structure))
+        elif fmt == "cif":
+            from pymatgen.io.cif import CifWriter
+            return str(CifWriter(structure))
+        elif fmt in ["poscar", "vasp"]:
+            from pymatgen.io.vasp import Poscar
+            return str(Poscar(structure))
+        else:
+            raise ValueError(f"Unsupported format: {fmt}. Supported formats are: poscar, xyz, cif.")
+        
+    def remove_atom(self, index: int) -> 'StructureModify':
+        """移除指定索引的原子"""
+        if index < 0 or index >= len(self._structure):
+            raise IndexError(f"Atom index {index} out of range (0-{len(self._structure)-1})")
+        self._structure.remove_sites([index])
+        self._structure = self._sanitize_structure(self._structure)
+        self._refresh_fixed_coords()
+        return self
+    
+    def get_structure_info(self) -> dict:
+        """
+        返回当前结构的晶格参数、原子统计等摘要信息。
+        设计为 FastAPI 响应体的直接数据源。
+        
+        Returns:
+            包含以下字段的字典：
+            - a, b, c (float): 晶格长度，单位 Å
+            - alpha, beta, gamma (float): 晶格角度，单位 °
+            - volume (float): 晶胞体积，单位 Å³
+            - num_atoms (int): 原子总数
+            - formula (str): 化学式（如 "Pt6"）
+            - reduced_formula (str): 最简化学式（如 "Pt"）
+            - cell_type (str): 'bulk' 或 'slab'（根据 c 轴判断）
+        """
+        lattice = self._structure.lattice
+        composition = self._structure.composition
+        
+        # 简单启发式判断：c 轴显著大于 a/b 时认为是 slab（含真空层）
+        cell_type = "slab" if lattice.c > max(lattice.a, lattice.b) * 1.5 else "bulk"
+        
+        return {
+            "a": round(lattice.a, 4),
+            "b": round(lattice.b, 4),
+            "c": round(lattice.c, 4),
+            "alpha": round(lattice.alpha, 4),
+            "beta": round(lattice.beta, 4),
+            "gamma": round(lattice.gamma, 4),
+            "volume": round(lattice.volume, 4),
+            "num_atoms": len(self._structure),
+            "formula": composition.formula.replace(" ", ""),
+            "reduced_formula": composition.reduced_formula,
+            "cell_type": cell_type,
+        }

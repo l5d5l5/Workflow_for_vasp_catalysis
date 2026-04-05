@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>晶体结构（Bulk）- Catalyst Workbench</title>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+      --green:#18a957; --green2:#e7f7ee; --shadow:0 8px 24px rgba(17,24,39,.08); --radius:14px;
+      --mono: ui-monospace, Menlo, Consolas, monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);font-family:var(--sans);color:var(--text)}
+    .app{display:flex;height:100vh;min-height:820px}
+    .sidebar{width:270px;background:var(--card);border-right:1px solid var(--line);padding:18px 14px;flex:0 0 auto;}
+    .brand{display:flex;gap:10px;align-items:center;margin-bottom:16px}
+    .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--green),#28d17a);box-shadow:0 10px 20px rgba(24,169,87,.22)}
+    .brand .name{font-weight:900;font-size:14px}
+    .brand .sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .navTitle{font-size:12px;color:var(--muted);margin:14px 10px 6px}
+    .nav a{display:flex;align-items:center;text-decoration:none;color:var(--text);padding:10px 10px;border-radius:12px;border:1px solid transparent;margin-bottom:6px;font-size:13px}
+    .nav a.active{background:var(--green2);border-color:#c8efd8;color:#0f6c39;font-weight:800}
+    .main{flex:1;display:flex;flex-direction:column;min-width:0}
+    .topbar{height:62px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+    .crumb{font-size:12px;color:var(--muted)}
+    .title{font-size:16px;font-weight:900;margin-top:2px}
+    .right{display:flex;gap:10px;align-items:center}
+    .pill{padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted)}
+    .btn{padding:10px 12px;border-radius:12px;border:1px solid #c8efd8;background:var(--green);color:#fff;font-weight:900;box-shadow:0 10px 18px rgba(24,169,87,.18);font-size:12px; cursor:pointer;white-space:nowrap;}
+    .btn.secondary{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn.ghost{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+    .content{padding:18px; height:calc(100vh - 62px); min-height:0}
+    .grid{display:grid;grid-template-columns:360px 1fr 360px;gap:14px;height:100%;min-height:0;}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .head{padding:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+    .head h3{margin:0;font-size:13px}
+    .tag{font-size:11px;padding:4px 8px;border-radius:999px;background:var(--green2);color:#0f6c39;border:1px solid #c8efd8}
+    .body{padding:14px; overflow:auto; min-height:0; display:flex; flex-direction:column;}
+    .field{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:#fff; flex-shrink:0;}
+    .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}
+    .hint{font-size:12px;color:var(--muted);line-height:1.45;margin-top:8px}
+    .error{font-size:12px;color:#b91c1c;display:none;margin-top:6px}
+    .row{display:flex;gap:10px;align-items:center}
+    .num{flex:1;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;outline:none;background:#fff;}
+    .num:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .coordGrid{display:flex;flex-direction:column;gap:8px;margin-top:10px;}
+    .coordLine{display:flex;align-items:center;gap:10px;}
+    .coordLabel{width:18px;font-size:12px;font-weight:900;color:var(--muted);text-align:right;user-select:none;}
+    .drop{border:1.5px dashed #cbd5e1;border-radius:12px;padding:12px;background:#fafcff;}
+    .dropTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .dropText{font-size:12px;font-weight:900}
+    .fileName{font-size:12px;color:var(--muted);margin-top:8px}
+    input[type="file"]{display:none}
+    .scRow{display:flex;align-items:center;gap:8px}
+    .tinyNum{width:64px;padding:7px 8px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;text-align:center;outline:none;background:#fff;}
+    .tinyNum:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .mul{color:var(--muted);font-weight:900;font-size:12px; user-select:none}
+    .viewerWrap{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#ffffff,#f7fafc);height:calc(100% - 280px);min-height:380px;position:relative;}
+    #viewer3d{position:absolute; inset:0}
+    .viewerBadge{position:absolute;top:12px;left:12px;padding:6px 10px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12px; z-index:5;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .viewerBadge b{font-family:var(--mono);color:#0f6c39}
+    .viewerToolbar{position:absolute;top:10px; right:10px;display:flex; gap:8px;z-index:6;align-items: center;}
+    .viewerToolbar .btn{padding:8px 10px;font-size:12px;border-radius:12px;box-shadow:none;}
+    .dd{position:relative}
+    .ddBtn{width:100%; display:flex; justify-content:space-between; align-items:center; gap:10px;padding:10px 10px; border-radius:12px; border:1px solid var(--line); background:#fff;cursor:pointer; text-align:left;}
+    .ddBtnMain{display:flex; flex-direction:column; gap:2px}
+    .ddBtnTitle{font-size:12px; font-weight:900}
+    .ddBtnSub{font-size:11px; color:var(--muted)}
+    .ddCaret{color:var(--muted); font-size:12px}
+    .ddMenu{position:absolute; left:0; right:0; top:calc(100% + 8px);background:var(--card); border:1px solid var(--line); border-radius:14px;box-shadow:var(--shadow); padding:8px; display:none; z-index:50;max-height:300px; overflow:auto;}
+    .dd.open .ddMenu{display:block}
+    .ddSearch{padding:10px 10px; border:1px solid var(--line); border-radius:12px; margin-bottom:8px;font-size:12px; width:100%;}
+    .ddItem{padding:10px 10px; border-radius:12px; border:1px solid transparent; cursor:pointer}
+    .ddItem:hover{background:var(--green2); border-color:#c8efd8}
+    .ddTitle{font-size:12px; font-weight:900}
+    .ddSub{font-size:11px; color:var(--muted); margin-top:3px; line-height:1.25}
+    .infoGrid{margin-top:10px;display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;}
+    .mini{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff}
+    .mini .k{font-size:11px;color:var(--muted)}
+    .mini .v{font-size:12px;font-weight:900;margin-top:4px}
+    .mono{font-family:var(--mono)}
+    .viewerActions{margin-top:10px;display:flex;gap:10px;}
+    .viewerActions button{flex:1;padding:11px 12px;border-radius:12px;font-weight:900;cursor:pointer;font-size:12px;}
+    .viewerActions .ghostBtn{border:1px solid var(--line);background:#fff;color:var(--text);}
+    .viewerActions .primaryBtn{border:1px solid #c8efd8;background:var(--green);color:#fff;box-shadow:0 10px 18px rgba(24,169,87,.18);}
+    .viewerActions .primaryBtn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+    .searchBox{width:100%;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;outline:none;}
+    .searchBox:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .chip{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;cursor:pointer;user-select:none}
+    .chip.on{border-color:#c8efd8;background:var(--green2);color:#0f6c39;font-weight:900}
+    .list{margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+    .item{border:1px solid var(--line);border-radius:12px;padding:10px;cursor:pointer;background:#fff; display:flex; justify-content:space-between; align-items:center;}
+    .item:hover{background:var(--green2);border-color:#c8efd8}
+    .item .t{font-weight:900;font-size:12px}
+    .item .s{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.25}
+    .item.active{background:var(--green2);border-color:#c8efd8}
+    .modalMask{position:fixed; inset:0;background:rgba(17,24,39,.45);display:none;align-items:center;justify-content:center;padding:18px;z-index:200;}
+    .modal{width:min(560px, 100%);max-height:90vh;background:#fff;border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;}
+    .modalHead{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;flex:0 0 auto}
+    .modalHead .t{font-weight:900;font-size:13px}
+    .modalBody{padding:14px;overflow:auto;flex:1 1 auto}
+    .matGrid{display:grid;grid-template-columns:repeat(3, 1fr);gap:10px}
+    .matGrid input{padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;outline:none;background:#fff;text-align:center;}
+    .matGrid input:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .modalFoot{padding:12px 14px;border-top:1px solid var(--line);display:flex;gap:10px;flex:0 0 auto}
+    .modalFoot .btn{flex:1}
+  </style>
+</head>
+
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <div class="name">化学计算AI平台</div>
+        <div class="sub">Catalyst Workbench</div>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="navTitle">平台主页</div>
+      <div class="navTitle">智能模型</div>
+      <div class="navTitle">催化剂结构</div>
+      <a class="active" href="#">晶体结构</a>
+      <a href="#">表面结构</a>
+      <a href="#">吸附结构</a>
+      <a href="#">纳米颗粒</a>
+      <a href="#">溶剂化结构</a>
+      <div class="navTitle">催化剂性能</div>
+      <a href="#">结构优化</a>
+      <a href="#">电子结构</a>
+      <a href="#">过渡态</a>
+      <a href="#">工作流式计算</a>
+      <div class="navTitle">表征模拟</div>
+      <a href="#">XRD</a>
+      <a href="#">NMR</a>
+      <a href="#">IR</a>
+      <div class="navTitle">全局</div>
+      <a href="#">任务管理</a>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <div class="crumb">催化剂结构 / 晶体结构</div>
+        <div class="title">晶体结构</div>
+      </div>
+      <div class="right">
+        <div class="pill">🔔</div>
+        <div class="pill">A. Chen</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="grid">
+
+        <!-- LEFT: Tools -->
+        <section class="card">
+          <div class="head"><h3>工具</h3><span class="tag">Edit</span></div>
+          <div class="body">
+
+            <!-- 1. 导入结构 & 历史记录 -->
+            <div class="field">
+              <label>导入结构</label>
+              <div class="drop" id="dropZone">
+                <div class="dropTop">
+                  <div class="dropText">拖拽文件/ 点击上传</div>
+                  <label class="btn secondary" for="xyzFile">上传</label>
+                  <input id="xyzFile" type="file" accept=".xyz,text/plain,.cif,.poscar">
+                </div>
+                <div class="fileName" id="fileName">来自结构库：BULK-0108</div>
+                <div id="fileErr" class="error">文件解析失败</div>
+              </div>
+              
+              <div class="hint" style="margin-top:12px; font-weight:900; color:var(--text);">导入历史记录</div>
+              <div class="list" id="historyList" style="max-height: 110px; overflow-y: auto; margin-top:6px;">
+                <div class="hint" style="text-align:center; padding:10px 0;">暂无历史记录</div>
+              </div>
+            </div>
+
+            <!-- 2. Supercell -->
+            <div class="field">
+              <label>Supercell (a × b × c)</label>
+              <div class="scRow">
+                <input id="nx" class="tinyNum" type="number" min="1" step="1" value="2">
+                <span class="mul">×</span>
+                <input id="ny" class="tinyNum" type="number" min="1" step="1" value="2">
+                <span class="mul">×</span>
+                <input id="nz" class="tinyNum" type="number" min="1" step="1" value="2">
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <button id="supercellBtn" class="btn secondary" style="flex:1;">生成预览</button>
+              </div>
+            </div>
+
+            <!-- 3. 转换矩阵 -->
+            <div class="field">
+              <label>转换矩阵（3×3）</label>
+              <div class="row">
+                <button id="openMatBtn" class="btn secondary" style="flex:1;">编辑矩阵</button>
+              </div>
+            </div>
+
+            <!-- 4. 原子编辑 -->
+            <div class="field">
+              <label>原子编辑（点击预览选中）</label>
+              <div class="row">
+                <input id="elemInput" class="num" type="text" value="">
+                <button id="applyElemBtn" class="btn secondary" style="width:120px;">改元素</button>
+              </div>
+              <div class="coordGrid">
+                <div class="coordLine">
+                  <div class="coordLabel">x</div>
+                  <input id="xInput" class="num" type="number" step="0.1" placeholder="x">
+                </div>
+                <div class="coordLine">
+                  <div class="coordLabel">y</div>
+                  <input id="yInput" class="num" type="number" step="0.1" placeholder="y">
+                </div>
+                <div class="coordLine">
+                  <div class="coordLabel">z</div>
+                  <input id="zInput" class="num" type="number" step="0.1" placeholder="z">
+                </div>
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <button id="applyPosBtn" class="btn secondary" style="flex:1;">改坐标</button>
+                <button id="deleteAtomBtn" class="btn secondary" style="flex:1;">删除</button>
+              </div>
+            </div>
+
+            <!-- 底部全局按钮 -->
+            <div style="margin-top: auto; padding-top: 10px;">
+              <div class="row">
+                <button id="globalCommitBtn" class="btn" style="flex:1;">保留设置</button>
+                <button id="globalUndoBtn" class="btn secondary" style="flex:1;" disabled>返回上一步</button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- MIDDLE: Viewer -->
+        <section class="card">
+          <div class="head">
+            <h3>结构预览</h3>
+          </div>
+          <div class="body">
+            <div class="field" style="margin-bottom:12px;">
+              <label>晶体结构（Bulk）</label>
+              <div class="dd" data-dd="bulk">
+                <button class="ddBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <div class="ddBtnMain">
+                    <div class="ddBtnTitle" id="bulkTitle">BULK-0108</div>
+                    <div class="ddBtnSub" id="bulkSub">Pt cluster</div>
+                  </div>
+                  <div class="ddCaret">▾</div>
+                </button>
+                <div class="ddMenu" role="listbox" id="bulkMenu">
+                  <input class="ddSearch" type="text" placeholder="搜索：ID / 化学式 / 元素…" data-search="bulk">
+                  <!-- 动态渲染 -->
+                </div>
+              </div>
+            </div>
+
+            <div class="viewerWrap">
+              <div class="viewerBadge">当前：<b id="currentId">BULK-0108</b> ｜ <span class="mono" id="viewerStatus">就绪</span></div>
+              
+              <!-- 下载下拉菜单 -->
+              <div class="viewerToolbar">
+                <div class="dd" id="dlDropdown">
+                  <button class="btn secondary ddBtn" type="button" style="padding:8px 10px; font-size:12px; height: 32px;">下载结构 ▾</button>
+                  <div class="ddMenu" style="min-width: 90px; left: auto; right: 0; top: calc(100% + 4px);">
+                    <div class="ddItem dl-item" data-fmt="xyz"><div class="ddTitle">XYZ</div></div>
+                    <div class="ddItem dl-item" data-fmt="cif"><div class="ddTitle">CIF</div></div>
+                    <div class="ddItem dl-item" data-fmt="poscar"><div class="ddTitle">POSCAR</div></div>
+                  </div>
+                </div>
+              </div>
+
+              <div id="viewer3d"></div>
+            </div>
+
+            <div class="infoGrid">
+              <div class="mini"><div class="k">a, b, c (Å)</div><div class="v mono" id="abcOut">5.54, 5.54, 5.54</div></div>
+              <div class="mini"><div class="k">α, β, γ (°)</div><div class="v mono" id="angOut">90.0, 90.0, 90.0</div></div>
+              <div class="mini"><div class="k">V (Å³)</div><div class="v mono" id="volOut">170.03</div></div>
+              <div class="mini"><div class="k">Atoms</div><div class="v mono" id="natOut">6</div></div>
+              <div class="mini"><div class="k">Formula</div><div class="v mono" id="formOut">Pt6</div></div>
+              <div class="mini"><div class="k">Cell</div><div class="v" id="cellHint">bulk</div></div>
+            </div>
+
+            <div class="mini" style="margin-top:10px;">
+              <div class="k">ML预测结果</div>
+              <div class="v" id="quickOptOut" style="font-weight:900;color:var(--green);">—</div>
+            </div>
+
+            <div class="viewerActions">
+              <button id="quickOptBtn" class="ghostBtn" title="基于模型预测结构">ML预测</button>
+              <button id="goOptBtn" class="primaryBtn" title="进入结构优化">进入结构优化</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- RIGHT: DB -->
+        <section class="card">
+          <div class="head"><h3>结构库</h3></div>
+          <div class="body">
+            <input id="dbSearch" class="searchBox" placeholder="搜索：ID / 化学式 / 元素比… (数据库)">
+            <div class="filters">
+              <div class="chip on" data-filter="database">数据库</div>
+              <div class="chip" data-filter="mine">我的</div>
+            </div>
+            <div class="list" id="dbList"></div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Matrix modal -->
+<div class="modalMask" id="matMask" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modalHead">
+      <div class="t">转换矩阵（3×3）</div>
+      <button id="closeMatBtn" class="btn secondary" style="padding:8px 10px;">关闭</button>
+    </div>
+    <div class="modalBody">
+      <div class="matGrid" id="matGrid">
+        <input data-m="0,0" value="1"><input data-m="0,1" value="0"><input data-m="0,2" value="0">
+        <input data-m="1,0" value="0"><input data-m="1,1" value="1"><input data-m="1,2" value="0">
+        <input data-m="2,0" value="0"><input data-m="2,1" value="0"><input data-m="2,2" value="1">
+      </div>
+      <div id="matErr" class="error" style="display:none;">矩阵格式不正确</div>
+    </div>
+    <div class="modalFoot">
+      <button id="identityBtn" class="btn secondary">单位矩阵</button>
+      <button id="applyMatBtn" class="btn">应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- 3Dmol loader -->
+<script>
+  (function load3Dmol(){
+    const cdn = document.createElement('script');
+    cdn.src = 'https://unpkg.com/3dmol/build/3Dmol-min.js';
+    cdn.onload = () => { window.__3dmolReady__ = true; initApp(); };
+    cdn.onerror = () => console.error('[3Dmol] CDN 加载失败');
+    document.head.appendChild(cdn);
+  })();
+</script>
+
+<script>
+  // ----------------------------
+  // Data & Formatting
+  // ----------------------------
+  const DB = [
+    { id:"BULK-0001", name:"Cu demo", owner:"database", tags:["Cu"], xyz:`4\nCu demo\nCu 0.000 0.000 0.000\nCu 2.550 0.000 0.000\nCu 0.000 2.550 0.000\nCu 2.550 2.550 0.000\n`},
+    { id:"BULK-0002", name:"Ni demo", owner:"database", tags:["Ni"], xyz:`4\nNi demo\nNi 0.000 0.000 0.000\nNi 2.490 0.000 0.000\nNi 0.000 2.490 0.000\nNi 2.490 2.490 0.000\n`},
+    { id:"BULK-0108", name:"Pt cluster", owner:"database", tags:["Pt"], xyz:`6\nPt demo\nPt 0.000 0.000 0.000\nPt 2.770 0.000 0.000\nPt 0.000 2.770 0.000\nPt 2.770 2.770 0.000\nPt 1.385 1.385 2.000\nPt 4.155 1.385 2.000\n`}
+  ];
+
+  const cellParams = {
+    "BULK-0001": { a: 5.10, b: 5.10, c: 5.10, alpha: 90.0, beta: 90.0, gamma: 90.0, formula: "Cu4" },
+    "BULK-0002": { a: 4.98, b: 4.98, c: 4.98, alpha: 90.0, beta: 90.0, gamma: 90.0, formula: "Ni4" },
+    "BULK-0108": { a: 5.54, b: 5.54, c: 5.54, alpha: 90.0, beta: 90.0, gamma: 90.0, formula: "Pt6" }
+  };
+
+  const importHistory = [];
+
+  function parseXYZ(text){
+    const lines = text.trim().split(/\r?\n/);
+    if(lines.length < 3) throw new Error("too few lines");
+    const n = parseInt(lines[0].trim(), 10);
+    const atoms = [];
+    for(let i=2; i<2+n; i++){
+      const p = lines[i].trim().split(/\s+/);
+      if(p.length >= 4) atoms.push({el:p[0], x:Number(p[1]), y:Number(p[2]), z:Number(p[3])});
+    }
+    return { comment: lines[1] || "", atoms };
+  }
+  
+  function toXYZ(comment, atoms){
+    return `${atoms.length}\n${comment || ""}\n` + atoms.map(a => `${a.el} ${a.x.toFixed(3)} ${a.y.toFixed(3)} ${a.z.toFixed(3)}`).join("\n") + "\n";
+  }
+
+  function toCIF(comment, atoms, cell) {
+    const c = cell || { a:10, b:10, c:10, alpha:90, beta:90, gamma:90 };
+    let cif = `data_${(comment||"structure").replace(/\s/g,'_')}\n`;
+    cif += `_cell_length_a ${c.a.toFixed(4)}\n_cell_length_b ${c.b.toFixed(4)}\n_cell_length_c ${c.c.toFixed(4)}\n`;
+    cif += `_cell_angle_alpha ${c.alpha.toFixed(4)}\n_cell_angle_beta ${c.beta.toFixed(4)}\n_cell_angle_gamma ${c.gamma.toFixed(4)}\n`;
+    cif += `loop_\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n`;
+    cif += atoms.map(a => `${a.el} ${(a.x/c.a).toFixed(5)} ${(a.y/c.b).toFixed(5)} ${(a.z/c.c).toFixed(5)}`).join("\n");
+    return cif + "\n";
+  }
+
+  function toPOSCAR(comment, atoms, cell) {
+    const c = cell || { a:10, b:10, c:10 };
+    let poscar = `${comment || "Generated by Catalyst Workbench"}\n1.0\n`;
+    poscar += `${c.a.toFixed(4)} 0.0000 0.0000\n0.0000 ${c.b.toFixed(4)} 0.0000\n0.0000 0.0000 ${c.c.toFixed(4)}\n`;
+    const counts = {};
+    atoms.forEach(a => counts[a.el] = (counts[a.el]||0)+1);
+    poscar += Object.keys(counts).join(" ") + "\n";
+    poscar += Object.values(counts).join(" ") + "\n";
+    poscar += "Cartesian\n";
+    atoms.forEach(a => { poscar += `${a.x.toFixed(5)} ${a.y.toFixed(5)} ${a.z.toFixed(5)}\n`; });
+    return poscar;
+  }
+
+  // ----------------------------
+  // State & Undo
+  // ----------------------------
+  const state = {
+    currentId:"BULK-0108",
+    comment:"Pt demo",
+    atoms:[],
+    selectedIndex:null,
+    lastMatrix:[[1,0,0],[0,1,0],[0,0,1]]
+  };
+
+  const undoStack = [];
+  function pushUndo(){
+    undoStack.push({
+      currentId:state.currentId, comment:state.comment,
+      atoms:state.atoms.map(a=>({ ...a })), selectedIndex:state.selectedIndex,
+      lastMatrix:state.lastMatrix.map(r=>r.slice()),
+      fileName: document.getElementById("fileName").textContent,
+      quickOptOut: document.getElementById("quickOptOut").textContent
+    });
+    document.getElementById("globalUndoBtn").disabled = false;
+  }
+  
+  function undo(){
+    const prev = undoStack.pop();
+    document.getElementById("globalUndoBtn").disabled = undoStack.length === 0;
+    if(!prev) return;
+
+    Object.assign(state, {
+      currentId: prev.currentId, comment: prev.comment,
+      atoms: prev.atoms.map(a=>({ ...a })), selectedIndex: prev.selectedIndex,
+      lastMatrix: prev.lastMatrix.map(r=>r.slice())
+    });
+
+    document.getElementById("fileName").textContent = prev.fileName || "未选择文件";
+    document.getElementById("quickOptOut").textContent = prev.quickOptOut || "—";
+    document.getElementById("viewerStatus").textContent = "就绪";
+    document.getElementById("bulkTitle").textContent = state.currentId;
+    const entry = DB.find(e => e.id === state.currentId);
+    if(entry) document.getElementById("bulkSub").textContent = entry.name;
+
+    renderViewer(); updateSelectionUI(); renderDB(); updateCrystalInfo();
+  }
+
+  // ----------------------------
+  // Viewer & UI Updates
+  // ----------------------------
+  let viewer = null;
+  function renderViewer(){
+    if(!viewer) return;
+    viewer.clear();
+    viewer.addModel(toXYZ(state.comment, state.atoms), "xyz");
+    viewer.setStyle({}, { stick:{radius:0.18}, sphere:{scale:0.28} });
+    viewer.setClickable({}, true, function(atom){
+      state.selectedIndex = atom.index;
+      updateSelectionUI(); highlightSelection();
+    });
+    viewer.zoomTo(); viewer.render();
+    document.getElementById("currentId").textContent = state.currentId;
+    updateCrystalInfo();
+  }
+
+  function highlightSelection(){
+    if(state.selectedIndex == null || !viewer) return;
+    viewer.setStyle({}, { stick:{radius:0.18}, sphere:{scale:0.28} });
+    viewer.setStyle({ index: state.selectedIndex }, { sphere:{scale:0.45, color:"rgb(220,38,38)"} });
+    viewer.render();
+  }
+
+  function updateSelectionUI(){
+    if(state.selectedIndex == null){
+      ["elemInput", "xInput", "yInput", "zInput"].forEach(id => document.getElementById(id).value = "");
+      return;
+    }
+    const a = state.atoms[state.selectedIndex];
+    if(!a) { state.selectedIndex = null; return; }
+    document.getElementById("elemInput").value = a.el;
+    document.getElementById("xInput").value = a.x.toFixed(3);
+    document.getElementById("yInput").value = a.y.toFixed(3);
+    document.getElementById("zInput").value = a.z.toFixed(3);
+  }
+
+  function updateCrystalInfo(){
+    const cell = cellParams[state.currentId] || {a:10, b:10, c:10, alpha:90, beta:90, gamma:90, formula:"Unknown"};
+    const V = cell.a * cell.b * cell.c; // Simplified volume
+    document.getElementById("abcOut").textContent = `${cell.a.toFixed(2)}, ${cell.b.toFixed(2)}, ${cell.c.toFixed(2)}`;
+    document.getElementById("angOut").textContent = `${cell.alpha.toFixed(1)}, ${cell.beta.toFixed(1)}, ${cell.gamma.toFixed(1)}`;
+    document.getElementById("volOut").textContent = `${V.toFixed(2)}`;
+    document.getElementById("natOut").textContent = `${state.atoms.length}`;
+    
+    const counts = {};
+    state.atoms.forEach(a => counts[a.el] = (counts[a.el]||0)+1);
+    const formula = Object.keys(counts).map(k => `${k}${counts[k]>1?counts[k]:''}`).join('');
+    document.getElementById("formOut").textContent = formula || cell.formula;
+    document.getElementById("cellHint").textContent = (cell.c >= 15 ? "slab / vacuum" : "bulk");
+  }
+
+  // ----------------------------
+  // DB, History & Dropdown
+  // ----------------------------
+  let activeFilter = "database";
+  function renderDB(){
+    const q = (document.getElementById("dbSearch").value || "").trim().toLowerCase();
+    const list = document.getElementById("dbList");
+    list.innerHTML = "";
+
+    let items = [];
+    if(activeFilter === "database") {
+      items = DB.filter(e => e.owner !== "mine").filter(e => {
+        if(!q) return true;
+        return `${e.id} ${e.name} ${e.tags.join(" ")}`.toLowerCase().includes(q);
+      });
+    } else {
+      items = DB.filter(e => e.owner === "mine").filter(e => {
+        if(!q) return true;
+        return e.name.toLowerCase().includes(q); // Only search by name in Mine
+      });
+    }
+
+    for(const e of items){
+      const div = document.createElement("div");
+      div.className = "item" + (e.id === state.currentId ? " active" : "");
+      
+      let actions = e.owner === "mine" 
+        ? `<div style="display:flex; gap:6px;">
+            <button class="btn secondary ren-btn" style="padding:4px 8px; font-size:11px;" title="重命名">✎</button>
+            <button class="btn secondary del-btn" style="padding:4px 8px; font-size:11px; color:#b91c1c;" title="删除">×</button>
+           </div>`
+        : `<button class="btn secondary add-btn" style="padding:4px 8px; font-size:11px;" title="添加到我的">＋</button>`;
+
+      div.innerHTML = `<div style="flex:1; min-width:0; overflow:hidden;" class="item-content"><div class="t">${e.id}</div><div class="s">${e.name}</div></div>${actions}`;
+
+      div.querySelector('.item-content').addEventListener("click", ()=> {
+        pushUndo(); loadEntry(e); renderDB();
+        document.getElementById("quickOptOut").textContent = "—";
+        document.getElementById("viewerStatus").textContent = "就绪";
+        document.getElementById("fileName").textContent = `来自结构库：${e.id}`;
+        document.getElementById("bulkTitle").textContent = e.id;
+        document.getElementById("bulkSub").textContent = e.name;
+      });
+
+      const addBtn = div.querySelector('.add-btn');
+      if(addBtn) addBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        const newId = "MY-" + e.id.split("-")[1] + "-" + Math.floor(Math.random()*1000);
+        DB.push({...e, id: newId, owner: "mine", name: e.name + " (Copy)"});
+        cellParams[newId] = {...cellParams[e.id]};
+        alert("已添加到我的结构库！");
+        renderDB(); renderDropdown();
+      });
+
+      const delBtn = div.querySelector('.del-btn');
+      if(delBtn) delBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        if(confirm(`确定要删除 ${e.name} 吗？`)){
+          DB.splice(DB.findIndex(x=>x.id===e.id), 1);
+          renderDB(); renderDropdown();
+        }
+      });
+
+      const renBtn = div.querySelector('.ren-btn');
+      if(renBtn) renBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        const newName = prompt("请输入新名称", e.name);
+        if(newName && newName.trim()) {
+          e.name = newName.trim();
+          renderDB(); renderDropdown();
+          if(state.currentId === e.id) document.getElementById("bulkSub").textContent = e.name;
+        }
+      });
+
+      list.appendChild(div);
+    }
+    if(items.length === 0) list.innerHTML = `<div class="hint" style="margin-top:10px;">无匹配结果</div>`;
+  }
+
+  function renderDropdown(){
+    const menu = document.getElementById("bulkMenu");
+    const searchInput = menu.querySelector('.ddSearch');
+    menu.innerHTML = ""; menu.appendChild(searchInput);
+    DB.forEach(e => {
+      const item = document.createElement("div");
+      item.className = "ddItem";
+      item.innerHTML = `<div class="ddTitle">${e.id}</div><div class="ddSub">${e.name}</div>`;
+      item.addEventListener('click', ()=>{
+        pushUndo(); loadEntry(e); renderDB(); updateCrystalInfo();
+        document.getElementById('bulkTitle').textContent = e.id;
+        document.getElementById('bulkSub').textContent = e.name;
+        document.getElementById("fileName").textContent = `来自结构库：${e.id}`;
+        document.getElementById("quickOptOut").textContent = "—";
+        document.getElementById("viewerStatus").textContent = "就绪";
+        document.querySelectorAll('.dd.open').forEach(dd=>dd.classList.remove('open'));
+      });
+      menu.appendChild(item);
+    });
+  }
+
+  function renderHistory(){
+    const list = document.getElementById("historyList");
+    list.innerHTML = "";
+    if(importHistory.length === 0){
+      list.innerHTML = `<div class="hint" style="text-align:center; padding:10px 0;">暂无历史记录</div>`;
+      return;
+    }
+    importHistory.forEach((h, idx) => {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.style.padding = "6px 10px";
+      div.innerHTML = `<div class="t">${h.name}</div><div class="s">${h.time}</div>`;
+      div.addEventListener("click", ()=>{
+        pushUndo();
+        state.currentId = h.id; state.comment = h.comment; state.atoms = h.atoms.map(a=>({...a})); state.selectedIndex = null;
+        document.getElementById("fileName").textContent = `历史记录：${h.name}`;
+        document.getElementById("bulkTitle").textContent = h.id;
+        document.getElementById("bulkSub").textContent = h.name;
+        renderViewer(); updateSelectionUI(); renderDB();
+      });
+      list.appendChild(div);
+    });
+  }
+
+  function loadEntry(entry){
+    const parsed = parseXYZ(entry.xyz);
+    state.currentId = entry.id; state.comment = parsed.comment || entry.name;
+    state.atoms = parsed.atoms; state.selectedIndex = null;
+    renderViewer(); updateSelectionUI();
+  }
+
+  // ----------------------------
+  // Interactions & Tools
+  // ----------------------------
+  function initApp() {
+    viewer = $3Dmol.createViewer(document.getElementById("viewer3d"), { backgroundColor: "white" });
+    const entry = DB.find(e=>e.id===state.currentId);
+    if(entry) loadEntry(entry);
+    renderDB(); renderDropdown(); updateCrystalInfo(); renderHistory();
+    
+    // Dropdown logic (Bulk & Download)
+    document.querySelectorAll('.ddBtn').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{
+        const dd = e.currentTarget.closest('.dd');
+        const isOpen = dd.classList.contains('open');
+        document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open'));
+        dd.classList.toggle('open', !isOpen);
+      });
+    });
+    window.addEventListener('click', (e)=>{ if(!e.target.closest('.dd')) document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open')); });
+    
+    document.querySelector('.ddSearch').addEventListener('input', (e)=>{
+      const q = e.target.value.trim().toLowerCase();
+      e.target.parentElement.querySelectorAll('.ddItem').forEach(item=>{
+        item.style.display = (item.innerText||'').toLowerCase().includes(q) ? '' : 'none';
+      });
+    });
+
+    // DB Search & Filters
+    document.getElementById("dbSearch").addEventListener("input", renderDB);
+    document.querySelectorAll(".chip").forEach(chip=>{
+      chip.addEventListener("click", ()=>{
+        document.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+        chip.classList.add("on");
+        activeFilter = chip.getAttribute("data-filter");
+        
+        const searchBox = document.getElementById("dbSearch");
+        if(activeFilter === "database") {
+          searchBox.placeholder = "搜索：ID / 化学式 / 元素比… (数据库)";
+        } else {
+          searchBox.placeholder = "搜索：文件名称… (我的)";
+        }
+        renderDB();
+      });
+    });
+
+    // Global Undo
+    document.getElementById("globalUndoBtn").addEventListener("click", undo);
+    document.addEventListener("keydown", (e)=>{ if((e.ctrlKey||e.metaKey)&&e.key==="z"){ e.preventDefault(); undo(); } });
+
+    // File Upload & History
+    const handleFile = async (file) => {
+      document.getElementById("fileErr").style.display = "none";
+      try{
+        const text = await file.text();
+        const parsed = parseXYZ(text);
+        pushUndo();
+        
+        const newId = "MY-" + Date.now().toString().slice(-4);
+        const newEntry = { id: newId, name: file.name, owner: "mine", tags: [], xyz: text };
+        DB.push(newEntry);
+        cellParams[newId] = {a:10, b:10, c:10, alpha:90, beta:90, gamma:90, formula:"Uploaded"};
+        
+        // Add to history
+        const timeStr = new Date().toLocaleTimeString();
+        importHistory.unshift({ id: newId, name: file.name, time: timeStr, comment: parsed.comment, atoms: parsed.atoms });
+        if(importHistory.length > 5) importHistory.pop();
+        renderHistory();
+
+        state.currentId = newId; state.comment = parsed.comment; state.atoms = parsed.atoms; state.selectedIndex = null;
+        document.getElementById("fileName").textContent = `已上传：${file.name}`;
+        document.getElementById("bulkTitle").textContent = newId;
+        document.getElementById("bulkSub").textContent = file.name;
+        
+        renderViewer(); updateSelectionUI(); renderDB(); renderDropdown();
+      }catch(e){ document.getElementById("fileErr").style.display = "block"; }
+    };
+    document.getElementById("xyzFile").addEventListener("change", (e)=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
+    const dropZone = document.getElementById("dropZone");
+    dropZone.addEventListener("dragover", (e)=>e.preventDefault());
+    dropZone.addEventListener("drop", (e)=>{ e.preventDefault(); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+
+    // Supercell
+    document.getElementById("supercellBtn").addEventListener("click", ()=>{
+      const nx = Number(document.getElementById("nx").value), ny = Number(document.getElementById("ny").value), nz = Number(document.getElementById("nz").value);
+      if(!nx||!ny||!nz) return;
+      pushUndo();
+      const out = [];
+      const dx=5, dy=5, dz=5;
+      for(let ix=0; ix<nx; ix++){
+        for(let iy=0; iy<ny; iy++){
+          for(let iz=0; iz<nz; iz++){
+            state.atoms.forEach(a=> out.push({ el:a.el, x:a.x+ix*dx, y:a.y+iy*dy, z:a.z+iz*dz }));
+          }
+        }
+      }
+      state.atoms = out; state.selectedIndex = null;
+      document.getElementById("quickOptOut").textContent = "—";
+      renderViewer(); updateSelectionUI();
+    });
+
+    // Matrix Modal
+    const matMask = document.getElementById("matMask");
+    document.getElementById("openMatBtn").addEventListener("click", ()=>{
+      document.querySelectorAll("#matGrid input").forEach(inp=>{
+        const [i,j] = inp.getAttribute("data-m").split(",").map(Number);
+        inp.value = state.lastMatrix[i][j];
+      });
+      matMask.style.display = "flex";
+    });
+    document.getElementById("closeMatBtn").addEventListener("click", ()=>matMask.style.display="none");
+    document.getElementById("identityBtn").addEventListener("click", ()=>{
+      const I = [[1,0,0],[0,1,0],[0,0,1]];
+      document.querySelectorAll("#matGrid input").forEach(inp=>{
+        const [i,j] = inp.getAttribute("data-m").split(",").map(Number);
+        inp.value = I[i][j];
+      });
+    });
+    document.getElementById("applyMatBtn").addEventListener("click", ()=>{
+      const M = [[0,0,0],[0,0,0],[0,0,0]];
+      document.querySelectorAll("#matGrid input").forEach(inp=>{
+        const [i,j] = inp.getAttribute("data-m").split(",").map(Number);
+        M[i][j] = Number(inp.value)||0;
+      });
+      pushUndo();
+      state.lastMatrix = M;
+      state.atoms = state.atoms.map(a=>({ el:a.el, x:M[0][0]*a.x+M[0][1]*a.y+M[0][2]*a.z, y:M[1][0]*a.x+M[1][1]*a.y+M[1][2]*a.z, z:M[2][0]*a.x+M[2][1]*a.y+M[2][2]*a.z }));
+      state.selectedIndex = null; matMask.style.display="none";
+      renderViewer(); updateSelectionUI();
+    });
+
+    // Atom Edits
+    document.getElementById("applyElemBtn").addEventListener("click", ()=>{
+      if(state.selectedIndex == null) return;
+      const el = document.getElementById("elemInput").value.trim();
+      if(el){ pushUndo(); state.atoms[state.selectedIndex].el = el; renderViewer(); }
+    });
+    document.getElementById("applyPosBtn").addEventListener("click", ()=>{
+      if(state.selectedIndex == null) return;
+      const x = Number(document.getElementById("xInput").value), y = Number(document.getElementById("yInput").value), z = Number(document.getElementById("zInput").value);
+      if(!Number.isFinite(x)||!Number.isFinite(y)||!Number.isFinite(z)) return;
+      pushUndo();
+      state.atoms[state.selectedIndex].x = x; state.atoms[state.selectedIndex].y = y; state.atoms[state.selectedIndex].z = z;
+      renderViewer();
+    });
+    document.getElementById("deleteAtomBtn").addEventListener("click", ()=>{
+      if(state.selectedIndex == null) return;
+      pushUndo(); state.atoms.splice(state.selectedIndex, 1); state.selectedIndex = null;
+      renderViewer(); updateSelectionUI();
+    });
+
+    // Global Commit (Save)
+    document.getElementById("globalCommitBtn").addEventListener("click", ()=>{
+      let entry = DB.find(e => e.id === state.currentId);
+      if (entry && entry.owner === "database") {
+        const newId = "MY-" + Date.now().toString().slice(-4);
+        DB.push({ id: newId, name: entry.name + " (Modified)", owner: "mine", tags: [], xyz: toXYZ(state.comment, state.atoms) });
+        cellParams[newId] = {...cellParams[entry.id]};
+        state.currentId = newId;
+        alert("已另存为我的结构：" + newId);
+      } else if (entry && entry.owner === "mine") {
+        entry.xyz = toXYZ(state.comment, state.atoms);
+        alert("已保存当前版本");
+      } else {
+        const newId = "MY-" + Date.now().toString().slice(-4);
+        DB.push({ id: newId, name: "New Structure", owner: "mine", tags: [], xyz: toXYZ(state.comment, state.atoms) });
+        cellParams[newId] = {a:10, b:10, c:10, alpha:90, beta:90, gamma:90, formula:"New"};
+        state.currentId = newId;
+        alert("已保存为新结构：" + newId);
+      }
+      renderDB(); renderDropdown();
+      document.getElementById("bulkTitle").textContent = state.currentId;
+    });
+
+    // Download Dropdown Selection
+    document.querySelectorAll(".dl-item").forEach(item => {
+      item.addEventListener("click", (e) => {
+        const format = e.currentTarget.getAttribute("data-fmt");
+        const cell = cellParams[state.currentId];
+        let content = "";
+        if(format === "xyz") content = toXYZ(state.comment, state.atoms);
+        else if(format === "cif") content = toCIF(state.comment, state.atoms, cell);
+        else if(format === "poscar") content = toPOSCAR(state.comment, state.atoms, cell);
+        
+        const blob = new Blob([content], {type:"text/plain"});
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `${state.currentId}.${format}`; a.click();
+        URL.revokeObjectURL(url);
+        document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open'));
+      });
+    });
+
+    // ML Predict
+    document.getElementById("quickOptBtn").addEventListener("click", ()=>{
+      pushUndo();
+      state.atoms.forEach(a => {
+        a.x += (Math.random() - 0.5) * 0.1;
+        a.y += (Math.random() - 0.5) * 0.1;
+        a.z += (Math.random() - 0.5) * 0.1;
+      });
+      const E = (-150 - Math.random()*20).toFixed(3);
+      const F = (Math.random()*0.08).toFixed(3);
+      
+      document.getElementById("quickOptOut").textContent = `E = ${E} eV | F_max = ${F} eV/Å`;
+      document.getElementById("viewerStatus").textContent = "ML预测完成";
+      
+      renderViewer();
+      if(state.selectedIndex != null) updateSelectionUI();
+    });
+
+    // Go to Optimization
+    document.getElementById("goOptBtn").addEventListener("click", ()=>{
+      const isPredicted = document.getElementById("viewerStatus").textContent === "ML预测完成";
+      const msg = isPredicted ? "已携带【ML预测后的结构数据】进入结构优化页面。" : "已携带【当前结构数据】进入结构优化页面。";
+      alert(msg);
+    });
+  }
+</script>
+</body></html>

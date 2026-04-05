@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>结构优化分析 - Catalyst Workbench</title>
+    
+    <!-- 引入依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <!-- 引入 3Dmol.js (结构优化特有依赖) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.1/3Dmol-min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* ── 基础变量与重置 (来自新 UI 框架) ── */
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+            --green: #18a957;
+            --green2: #e7f7ee;
+            --shadow: 0 8px 24px rgba(17,24,39,.08);
+            --radius: 14px;
+            --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: var(--sans); color: var(--text); font-size: 13px; }
+        
+        /* ── 整体布局 ── */
+        .app { display: flex; height: 100vh; min-height: 860px; }
+
+        /* ── 左侧边栏 (Sidebar) ── */
+        .sidebar {
+            width: 260px;
+            background: var(--card);
+            border-right: 1px solid var(--line);
+            padding: 18px 14px;
+            flex: 0 0 auto;
+            overflow-y: auto;
+        }
+        .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+        .logo {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--green), #28d17a);
+            box-shadow: 0 10px 20px rgba(24,169,87,.22);
+            display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;
+        }
+        .brand .name { font-weight: 900; font-size: 14px; }
+        .brand .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        
+        .navTitle { font-size: 12px; color: var(--muted); margin: 14px 10px 6px; }
+        .nav a {
+            display: flex; align-items: center; text-decoration: none; color: var(--text);
+            padding: 10px 10px; border-radius: 12px; border: 1px solid transparent;
+            margin-bottom: 6px; font-size: 13px; transition: all 0.2s;
+        }
+        .nav a.active { background: var(--green2); border-color: #c8efd8; color: #0f6c39; font-weight: 800; }
+        .nav a:hover:not(.active) { background: #f9fafb; }
+
+        /* ── 右侧主体 (Main) ── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        
+        /* ── 顶部导航栏 (Topbar) ── */
+        .topbar {
+            height: 62px; background: var(--card); border-bottom: 1px solid var(--line);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 18px;
+            flex-shrink: 0;
+        }
+        .crumb { font-size: 12px; color: var(--muted); }
+        .title { font-size: 16px; font-weight: 900; margin-top: 2px; }
+        .right { display: flex; gap: 10px; align-items: center; }
+        .pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 12px; color: var(--muted); }
+        
+        /* 按钮样式 */
+        .btn {
+            padding: 10px 12px; border-radius: 12px; border: 1px solid #c8efd8;
+            background: var(--green); color: #fff; font-weight: 900;
+            box-shadow: 0 10px 18px rgba(24,169,87,.18); font-size: 12px; cursor: pointer; transition: all 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary { background: #fff; color: var(--text); border-color: var(--line); box-shadow: none; }
+        .btn.secondary:hover { background: #f9fafb; }
+
+        /* ── 内容区域 (Content) ── */
+        .content { padding: 18px; height: calc(100vh - 62px); min-height: 0; overflow-y: auto; background: var(--bg); }
+        
+        /* ── 功能专属补充样式 ── */
+        [x-cloak] { display: none !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        .chart-container { position: relative; flex: 1; width: 100%; min-height: 250px; }
+        .chart-container > div { position: absolute; inset: 0; }
+    </style>
+</head>
+<body x-data="relaxApp()">
+
+<div class="app">
+    <!-- ═══ 左侧边栏 (Sidebar) ═══ -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="logo">C</div>
+            <div>
+                <div class="name">化学计算AI平台</div>
+                <div class="sub">Catalyst Workbench</div>
+            </div>
+        </div>
+        <div class="nav">
+            <div class="navTitle">平台主页</div>
+            
+            <div class="navTitle">智能模型</div>
+            
+            <div class="navTitle">催化剂结构</div>
+            <a href="#">晶体结构</a>
+            <a href="#">表面结构</a>
+            <a href="#">吸附结构</a>
+            <a href="#">纳米颗粒</a>
+            <a href="#">溶剂化结构</a>
+            
+            <div class="navTitle">催化剂性能</div>
+            <a href="#">结构优化</a>
+            <a href="#">电子结构</a>
+            <a href="#">过渡态</a>
+
+            <div class="navTitle">数据分析</div>
+            <!-- 调整了 Active 状态 -->
+            <a class="active" href="#">结构优化分析</a>
+            <a href="#">态密度 (DOS) 分析</a>
+            <a href="#">晶体轨道 (COHP)</a>
+        </div>
+    </aside>
+
+    <!-- ═══ 右侧主体 (Main) ═══ -->
+    <main class="main">
+        <!-- 顶部栏 -->
+        <div class="topbar">
+            <div>
+                <!-- 更新面包屑导航 -->
+                <div class="crumb">数据分析 / 结构优化分析</div>
+                <div class="title">结构优化分析</div>
+            </div>
+            <div class="right">
+                <button class="btn secondary flex items-center gap-2"><i data-lucide="bell" class="w-4 h-4"></i> 消息</button>
+                <div class="pill font-mono">User_01 / Online</div>
+            </div>
+        </div>
+        
+        <!-- 内容区 -->
+        <div class="content">
+            
+            <!-- ！！！以下为结构优化分析功能模块代码 ！！！ -->
+            <div class="max-w-7xl mx-auto space-y-6 pb-10">
+                
+                <!-- 1. 顶部控制面板 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <h1 class="text-xl font-bold flex items-center gap-2 text-slate-900">
+                            <i data-lucide="activity" class="text-emerald-600"></i> VASP 结构优化分析
+                        </h1>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row gap-4 items-end">
+                        <div class="flex-1 w-full max-w-xl space-y-2">
+                            <label class="text-sm font-bold text-slate-700">工作目录路径 (Work Directory)</label>
+                            <div class="relative flex items-center">
+                                <i data-lucide="folder" class="w-4 h-4 absolute left-3 text-slate-400"></i>
+                                <input type="text" x-model="workDir" 
+                                       class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm transition-colors font-mono" 
+                                       placeholder="例如: /home/user/vasp_calcs/relax_01">
+                            </div>
+                        </div>
+                        <button @click="analyze" :disabled="isAnalyzing || !workDir"
+                                class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors flex items-center gap-2 disabled:opacity-50 h-[42px] shadow-sm shadow-emerald-600/20 border-none cursor-pointer">
+                            <i data-lucide="play" class="w-4 h-4" x-show="!isAnalyzing"></i>
+                            <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isAnalyzing" style="display: none;"></i>
+                            <span x-text="isAnalyzing ? '处理中...' : '运行分析'"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 主体内容区 -->
+                <div x-show="hasData" x-cloak class="space-y-6">
+                    
+                    <!-- 警告横幅 -->
+                    <template x-if="stats.warnings && stats.warnings.length > 0">
+                        <div class="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-xl shadow-sm flex items-start gap-3">
+                            <i data-lucide="alert-triangle" class="w-5 h-5 text-amber-600 mt-0.5"></i>
+                            <div>
+                                <h3 class="text-sm font-bold text-amber-800">分析警告</h3>
+                                <ul class="mt-1 text-sm text-amber-700 list-disc list-inside ml-4">
+                                    <template x-for="warn in stats.warnings">
+                                        <li x-text="warn"></li>
+                                    </template>
+                                </ul>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- 2. 核心指标卡片 -->
+                    <div class="flex flex-wrap gap-4">
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200" :class="stats.converged ? 'border-b-4 border-b-emerald-500' : 'border-b-4 border-b-rose-500'">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">收敛状态</div>
+                            <div class="text-lg font-bold flex items-center gap-2" :class="stats.converged ? 'text-emerald-600' : 'text-rose-600'">
+                                <i :data-lucide="stats.converged ? 'check-circle' : 'x-circle'" class="w-5 h-5"></i>
+                                <span x-text="stats.converged ? '已收敛' : '未收敛'"></span>
+                            </div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">离子步数</div>
+                            <div class="text-xl font-bold text-slate-800 font-mono" x-text="stats.steps"></div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">最终能量</div>
+                            <div class="text-xl font-bold text-emerald-600 font-mono"><span x-text="stats.finalEnergy?.toFixed(4) || '-'"></span> <span class="text-xs font-normal text-slate-500">eV</span></div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">最终受力</div>
+                            <div class="text-xl font-bold text-rose-600 font-mono"><span x-text="stats.finalForce?.toFixed(4) || '-'"></span> <span class="text-xs font-normal text-slate-500">eV/Å</span></div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">费米能级</div>
+                            <div class="text-xl font-bold text-slate-800 font-mono"><span x-text="stats.fermiLevel?.toFixed(4) || '-'"></span> <span class="text-xs font-normal text-slate-500">eV</span></div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">总电子数</div>
+                            <div class="text-xl font-bold text-slate-800 font-mono" x-text="stats.totalElectrons || '-'"></div>
+                        </div>
+                        <div class="flex-auto min-w-[140px] bg-white p-4 rounded-xl shadow-sm border border-slate-200">
+                            <div class="text-slate-500 text-[11px] font-bold uppercase tracking-wider mb-1">总磁矩</div>
+                            <div class="text-xl font-bold text-slate-800 font-mono"><span x-text="stats.totalMag?.toFixed(3) || '0.000'"></span> <span class="text-xs font-normal text-slate-500">μB</span></div>
+                        </div>
+                    </div>
+
+                    <!-- 3. 第一层：结构可视化与能量图表 -->
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        
+                        <!-- 左侧：3D 结构可视化 -->
+                        <div class="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col" style="height: 420px;">
+                            <div class="px-4 py-3 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-xl">
+                                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                    <i data-lucide="box" class="w-4 h-4 text-emerald-500"></i> 结构可视化
+                                </h3>
+                                
+                                <div class="flex items-center gap-3">
+                                    <!-- 下载按钮组 -->
+                                    <div class="flex items-center gap-1.5">
+                                        <!-- Initial 下载 -->
+                                        <div x-data="{ open: false }" class="relative">
+                                            <button @click="open = !open" @click.away="open = false" class="px-2 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-600 text-xs font-bold rounded transition-colors flex items-center gap-1 cursor-pointer">
+                                                <i data-lucide="download" class="w-3 h-3"></i> 初始结构 <i data-lucide="chevron-down" class="w-3 h-3 opacity-50"></i>
+                                            </button>
+                                            <div x-show="open" x-transition class="absolute right-0 mt-1 w-24 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 overflow-hidden" style="display: none;">
+                                                <button @click="downloadStruct('initial', 'poscar'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">POSCAR</button>
+                                                <button @click="downloadStruct('initial', 'cif'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">CIF</button>
+                                                <button @click="downloadStruct('initial', 'xyz'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">XYZ</button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Final 下载 -->
+                                        <div x-data="{ open: false }" class="relative">
+                                            <button @click="open = !open" @click.away="open = false" class="px-2 py-1 bg-white border border-slate-200 hover:bg-slate-50 hover:border-slate-300 text-slate-600 text-xs font-bold rounded transition-colors flex items-center gap-1 cursor-pointer">
+                                                <i data-lucide="download" class="w-3 h-3"></i> 最终结构 <i data-lucide="chevron-down" class="w-3 h-3 opacity-50"></i>
+                                            </button>
+                                            <div x-show="open" x-transition class="absolute right-0 mt-1 w-24 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 overflow-hidden" style="display: none;">
+                                                <button @click="downloadStruct('final', 'poscar'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">CONTCAR</button>
+                                                <button @click="downloadStruct('final', 'cif'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">CIF</button>
+                                                <button @click="downloadStruct('final', 'xyz'); open=false" class="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 font-bold bg-transparent border-none cursor-pointer">XYZ</button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <!-- 视图切换 Toggle -->
+                                    <div class="flex bg-white border border-slate-200 rounded-lg p-0.5 ml-2">
+                                        <button @click="structMode = 'initial'" :class="structMode === 'initial' ? 'bg-emerald-50 text-emerald-700 font-bold shadow-sm' : 'text-slate-500 hover:bg-slate-50'" class="px-3 py-1 rounded-md text-xs transition-all border-none cursor-pointer">
+                                            查看初始
+                                        </button>
+                                        <button @click="structMode = 'final'" :class="structMode === 'final' ? 'bg-emerald-50 text-emerald-700 font-bold shadow-sm' : 'text-slate-500 hover:bg-slate-50'" class="px-3 py-1 rounded-md text-xs transition-all border-none cursor-pointer">
+                                            查看最终
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="chart-container bg-[#f8fafc] rounded-b-xl overflow-hidden cursor-move">
+                                <div id="molViewer"></div>
+                            </div>
+                        </div>
+
+                        <!-- 右侧：能量与 dE 收敛曲线 -->
+                        <div class="lg:col-span-7 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col" style="height: 420px;">
+                            <h3 class="text-sm font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                <i data-lucide="trending-down" class="w-4 h-4 text-emerald-500"></i> 能量与 dE 收敛曲线
+                            </h3>
+                            <div class="chart-container">
+                                <div id="energyChart"></div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- 4. 第二层：晶格参数与受力收敛图表 -->
+                    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        
+                        <div class="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
+                            <div class="bg-slate-50 px-4 py-3 border-b border-slate-200">
+                                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                    <i data-lucide="grid" class="w-4 h-4 text-emerald-500"></i> 晶格参数
+                                </h3>
+                            </div>
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-white border-b border-slate-100 text-slate-500">
+                                    <tr>
+                                        <th class="px-4 py-2 font-bold">参数</th>
+                                        <th class="px-4 py-2 font-bold">初始</th>
+                                        <th class="px-4 py-2 font-bold">最终</th>
+                                        <th class="px-4 py-2 font-bold">变化 (%)</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    <template x-for="param in latticeParams" :key="param.name">
+                                        <tr class="hover:bg-slate-50">
+                                            <td class="px-4 py-2 font-medium text-slate-700" x-text="param.name"></td>
+                                            <td class="px-4 py-2 font-mono text-slate-600" x-text="param.initial"></td>
+                                            <td class="px-4 py-2 font-mono text-slate-600" x-text="param.final"></td>
+                                            <td class="px-4 py-2 font-mono font-bold" 
+                                                :class="Math.abs(param.delta) > 1.0 ? 'text-rose-500' : 'text-emerald-500'"
+                                                x-text="param.delta > 0 ? '+' + param.delta.toFixed(2) : param.delta.toFixed(2)"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div class="lg:col-span-7 bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex flex-col" style="height: 320px;">
+                            <h3 class="text-sm font-bold text-slate-800 mb-2 flex items-center gap-2">
+                                <i data-lucide="arrow-down-to-dot" class="w-4 h-4 text-rose-500"></i> 最大受力收敛曲线
+                            </h3>
+                            <div class="chart-container">
+                                <div id="forceChart"></div>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <!-- 5. 第三层：位点磁矩 (Site Magnetization) -->
+                    <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-fit max-h-[400px]">
+                        <div class="bg-slate-50 px-4 py-3 border-b border-slate-200 flex justify-between items-center rounded-t-xl">
+                            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                <i data-lucide="magnet" class="w-4 h-4 text-purple-500"></i> 位点磁矩 (Site Magnetization)
+                            </h3>
+                            
+                            <button x-show="!siteMagLoaded" @click="loadSiteMag" :disabled="isLoadingSiteMag"
+                                    class="px-4 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 text-xs font-bold rounded-lg transition-colors flex items-center gap-2 disabled:opacity-50 cursor-pointer">
+                                <i data-lucide="download-cloud" class="w-4 h-4" x-show="!isLoadingSiteMag"></i>
+                                <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isLoadingSiteMag" style="display: none;"></i>
+                                <span x-text="isLoadingSiteMag ? '解析 OUTCAR 中...' : '加载位点磁矩'"></span>
+                            </button>
+                        </div>
+
+                        <div x-show="!siteMagLoaded" class="flex-1 flex flex-col items-center justify-center p-10 text-slate-400">
+                            <i data-lucide="eye-off" class="w-8 h-8 mb-3 opacity-50"></i>
+                            <p class="text-sm font-medium">为节省解析时间，位点磁矩默认隐藏。</p>
+                            <p class="text-xs mt-1">点击上方按钮，提取所有原子的分波磁矩数据。</p>
+                        </div>
+
+                        <div x-show="siteMagLoaded" class="overflow-y-auto flex-1 p-2" style="display: none;">
+                            <table class="w-full text-sm text-center">
+                                <thead class="text-xs text-slate-500 uppercase bg-white sticky top-0 z-10 shadow-sm">
+                                    <tr>
+                                        <th class="px-4 py-3 text-left">原子序号</th>
+                                        <th class="px-4 py-3">s 轨道</th>
+                                        <th class="px-4 py-3">p 轨道</th>
+                                        <th class="px-4 py-3">d 轨道</th>
+                                        <th class="px-4 py-3 font-bold text-purple-700">总计 (μB)</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-slate-100">
+                                    <template x-for="site in siteMagData" :key="site.atom_index">
+                                        <tr class="hover:bg-slate-50 transition-colors">
+                                            <td class="px-4 py-2.5 font-medium text-slate-700 text-left" x-text="`Atom ${site.atom_index}`"></td>
+                                            <td class="px-4 py-2.5 font-mono text-slate-500" x-text="site.s.toFixed(3)"></td>
+                                            <td class="px-4 py-2.5 font-mono text-slate-500" x-text="site.p.toFixed(3)"></td>
+                                            <td class="px-4 py-2.5 font-mono text-slate-500" x-text="site.d.toFixed(3)"></td>
+                                            <td class="px-4 py-2.5 font-mono font-bold" 
+                                                :class="Math.abs(site.tot) > 0.1 ? 'text-purple-600' : 'text-slate-600'"
+                                                x-text="site.tot.toFixed(3)"></td>
+                                        </tr>
+                                    </template>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+            <!-- ！！！以上为结构优化分析功能模块代码 ！！！ -->
+
+        </div>
+    </main>
+</div>
+
+<script>
+    function relaxApp() {
+        return {
+            workDir: '/home/user/vasp_calcs/relax_01',
+            isAnalyzing: false,
+            hasData: false,
+            
+            energyChart: null,
+            forceChart: null,
+            viewer: null,
+            structMode: 'final',
+            
+            stats: { 
+                converged: false, finalEnergy: 0, finalForce: 0,
+                fermiLevel: 0, totalElectrons: 0, totalMag: 0, steps: 0, warnings: []
+            },
+            
+            energyHistory: [], deHistory: [], forceHistory: [], latticeParams: [],
+            siteMagLoaded: false, isLoadingSiteMag: false, siteMagData: [],
+            
+            mockStructures: {
+                initial: `5\nInitial POSCAR\nPd 0.0 0.0 0.0\nPd 2.8 0.0 0.0\nPd 0.0 2.8 0.0\nC 1.4 1.4 2.2\nO 1.4 1.4 3.5`,
+                final:   `5\nFinal CONTCAR\nPd 0.0 0.0 0.0\nPd 2.75 0.0 0.0\nPd 0.0 2.75 0.0\nC 1.37 1.37 1.85\nO 1.37 1.37 3.02`
+            },
+
+            init() {
+                this.$nextTick(() => { lucide.createIcons(); });
+                this.$watch('structMode', () => { if(this.hasData) this.renderStructure(); });
+            },
+
+            analyze() {
+                if (!this.workDir) return;
+                this.isAnalyzing = true;
+                
+                setTimeout(() => {
+                    // 恢复全部指标数据
+                    this.stats = {
+                        converged: true, finalEnergy: -148.9125, finalForce: 0.0185,
+                        fermiLevel: -2.4512, totalElectrons: 48.0, totalMag: 1.852, steps: 42, 
+                        warnings: ["最后一步 dE = 1.20e-03 eV > 1e-3 eV，收敛处于边缘状态。"] 
+                    };
+
+                    this.latticeParams = [
+                        { name: 'a (Å)', initial: 8.500, final: 8.412, delta: -1.04 },
+                        { name: 'b (Å)', initial: 8.500, final: 8.412, delta: -1.04 },
+                        { name: 'c (Å)', initial: 20.000, final: 20.000, delta: 0.00 }
+                    ];
+
+                    this.energyHistory = []; this.deHistory = []; this.forceHistory = [];
+                    let currentE = -145.2341; let currentF = 3.5;
+                    
+                    for (let i = 1; i <= this.stats.steps; i++) {
+                        let prevE = currentE;
+                        currentE = this.stats.finalEnergy + (-145.2341 - this.stats.finalEnergy) * Math.exp(-i / 8);
+                        currentE += (Math.random() - 0.5) * 0.05;
+                        let dE = currentE - prevE;
+                        currentF = currentF * 0.82 + (Math.random() * 0.05);
+                        
+                        if (i === this.stats.steps) { dE = -0.0012; currentF = this.stats.finalForce; }
+                        
+                        this.energyHistory.push([i, parseFloat(currentE.toFixed(4))]);
+                        this.deHistory.push([i, parseFloat(Math.abs(dE).toFixed(5))]);
+                        this.forceHistory.push([i, parseFloat(currentF.toFixed(4))]);
+                    }
+
+                    this.siteMagLoaded = false;
+                    this.hasData = true; 
+                    this.isAnalyzing = false;
+                    
+                    setTimeout(() => {
+                        this.initCharts(); 
+                        this.renderStructure(); 
+                        lucide.createIcons();
+                    }, 100);
+                }, 800);
+            },
+
+            // 恢复结构下载功能
+            downloadStruct(type, format) {
+                let content = '';
+                let filename = '';
+                
+                if (format === 'xyz') {
+                    content = this.mockStructures[type];
+                    filename = type === 'initial' ? 'initial.xyz' : 'final.xyz';
+                } else if (format === 'poscar') {
+                    content = `Mock VASP Format for ${type}\n1.0\n  8.5000 0.0000 0.0000\n  0.0000 8.5000 0.0000\n  0.0000 0.0000 20.0000\n  Pd C O\n  3 1 1\nDirect\n  0.0 0.0 0.0\n  ...`;
+                    filename = type === 'initial' ? 'POSCAR' : 'CONTCAR';
+                } else if (format === 'cif') {
+                    content = `data_${type}_structure\n_cell_length_a 8.5000\n_cell_length_b 8.5000\n_cell_length_c 20.0000\n_cell_angle_alpha 90.0\n_cell_angle_beta 90.0\n_cell_angle_gamma 90.0\n...`;
+                    filename = type === 'initial' ? 'initial.cif' : 'final.cif';
+                }
+
+                const blob = new Blob([content], { type: 'text/plain;charset=utf-8;' });
+                const link = document.createElement("a");
+                link.href = URL.createObjectURL(blob);
+                link.download = filename;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(link.href);
+            },
+
+            // 恢复位点磁矩加载功能
+            loadSiteMag() {
+                this.isLoadingSiteMag = true;
+                setTimeout(() => {
+                    this.siteMagData = [
+                        { atom_index: 1, s: 0.001, p: 0.005, d: 0.580, tot: 0.586 },
+                        { atom_index: 2, s: 0.002, p: 0.004, d: 0.590, tot: 0.596 },
+                        { atom_index: 3, s: 0.001, p: 0.005, d: 0.585, tot: 0.591 },
+                        { atom_index: 4, s: -0.010, p: -0.020, d: 0.000, tot: -0.030 },
+                        { atom_index: 5, s: 0.005, p: 0.104, d: 0.000, tot: 0.109 }
+                    ];
+                    this.siteMagLoaded = true; this.isLoadingSiteMag = false;
+                }, 800);
+            },
+
+            initCharts() {
+                if (!this.energyChart) {
+                    this.energyChart = echarts.init(document.getElementById('energyChart'));
+                    this.forceChart = echarts.init(document.getElementById('forceChart'));
+                    window.addEventListener('resize', () => { 
+                        if(this.energyChart) this.energyChart.resize(); 
+                        if(this.forceChart) this.forceChart.resize();
+                        if(this.viewer) this.viewer.resize(); 
+                    });
+                }
+
+                this.energyChart.setOption({
+                    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+                    legend: { data: ['总能量 (Total Energy)', '|dE| (对数)'], top: 0 },
+                    grid: { left: '12%', right: '12%', bottom: '12%', top: '15%' },
+                    xAxis: { type: 'value', name: '离子步数', min: 1, max: this.stats.steps },
+                    yAxis: [
+                        { type: 'value', name: '能量 (eV)', position: 'left', scale: true, axisLine: { show: true, lineStyle: { color: '#18a957' } }, splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } } },
+                        { type: 'log', name: '|dE| (eV)', position: 'right', min: 1e-5, axisLine: { show: true, lineStyle: { color: '#f59e0b' } }, splitLine: { show: false } }
+                    ],
+                    series: [
+                        { name: '总能量 (Total Energy)', type: 'line', yAxisIndex: 0, data: this.energyHistory, smooth: true, symbol: 'none', itemStyle: { color: '#18a957' }, lineStyle: { width: 3 } },
+                        { name: '|dE| (对数)', type: 'line', yAxisIndex: 1, data: this.deHistory, smooth: true, symbol: 'emptyCircle', itemStyle: { color: '#f59e0b' }, lineStyle: { width: 2, type: 'dashed' } }
+                    ]
+                });
+
+                this.forceChart.setOption({
+                    tooltip: { trigger: 'axis', formatter: '步数 {b0}<br/>最大受力: {c0} eV/Å' },
+                    grid: { left: '12%', right: '5%', bottom: '15%', top: '10%' },
+                    xAxis: { type: 'value', name: '离子步数', min: 1, max: this.stats.steps },
+                    yAxis: { type: 'log', name: '最大受力 (eV/Å)', min: 0.001, axisLine: { show: true, lineStyle: { color: '#e11d48' } }, splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } } },
+                    series: [{ type: 'line', data: this.forceHistory, smooth: true, symbol: 'circle', symbolSize: 6, itemStyle: { color: '#e11d48' }, lineStyle: { width: 2 }, areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(225, 29, 72, 0.2)' }, { offset: 1, color: 'rgba(225, 29, 72, 0.0)' }]) } }]
+                });
+            },
+
+            renderStructure() {
+                const container = document.getElementById('molViewer');
+                if (!this.viewer) { this.viewer = $3Dmol.createViewer(container, { backgroundColor: '#f8fafc' }); }
+                this.viewer.clear();
+                const xyzData = this.mockStructures[this.structMode];
+                this.viewer.addModel(xyzData, "xyz");
+                this.viewer.setStyle({}, { sphere: { radius: 0.4, colorscheme: 'Jmol' }, stick: { radius: 0.15, colorscheme: 'Jmol' } });
+                this.viewer.zoomTo(); this.viewer.render();
+            }
+        }
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>晶体轨道 (COHP) 分析 - Catalyst Workbench</title>
+    
+    <!-- 引入依赖库 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* ── 基础变量与重置 (来自新 UI 框架) ── */
+        :root {
+            --bg: #f5f7fb;
+            --card: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --line: #e5e7eb;
+            --green: #18a957;
+            --green2: #e7f7ee;
+            --shadow: 0 8px 24px rgba(17,24,39,.08);
+            --radius: 14px;
+            --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: var(--sans); color: var(--text); font-size: 13px; }
+        
+        /* ── 整体布局 ── */
+        .app { display: flex; height: 100vh; min-height: 860px; }
+
+        /* ── 左侧边栏 (Sidebar) ── */
+        .sidebar {
+            width: 260px;
+            background: var(--card);
+            border-right: 1px solid var(--line);
+            padding: 18px 14px;
+            flex: 0 0 auto;
+            overflow-y: auto;
+        }
+        .brand { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; }
+        .logo {
+            width: 34px; height: 34px; border-radius: 10px;
+            background: linear-gradient(135deg, var(--green), #28d17a);
+            box-shadow: 0 10px 20px rgba(24,169,87,.22);
+            display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 18px;
+        }
+        .brand .name { font-weight: 900; font-size: 14px; }
+        .brand .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        
+        .navTitle { font-size: 12px; color: var(--muted); margin: 14px 10px 6px; }
+        .nav a {
+            display: flex; align-items: center; text-decoration: none; color: var(--text);
+            padding: 10px 10px; border-radius: 12px; border: 1px solid transparent;
+            margin-bottom: 6px; font-size: 13px; transition: all 0.2s;
+        }
+        .nav a.active { background: var(--green2); border-color: #c8efd8; color: #0f6c39; font-weight: 800; }
+        .nav a:hover:not(.active) { background: #f9fafb; }
+
+        /* ── 右侧主体 (Main) ── */
+        .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+        
+        /* ── 顶部导航栏 (Topbar) ── */
+        .topbar {
+            height: 62px; background: var(--card); border-bottom: 1px solid var(--line);
+            display: flex; align-items: center; justify-content: space-between; padding: 0 18px;
+            flex-shrink: 0;
+        }
+        .crumb { font-size: 12px; color: var(--muted); }
+        .title { font-size: 16px; font-weight: 900; margin-top: 2px; }
+        .right { display: flex; gap: 10px; align-items: center; }
+        .pill { padding: 8px 10px; border-radius: 999px; border: 1px solid var(--line); background: #fff; font-size: 12px; color: var(--muted); }
+        
+        /* 按钮样式 */
+        .btn {
+            padding: 10px 12px; border-radius: 12px; border: 1px solid #c8efd8;
+            background: var(--green); color: #fff; font-weight: 900;
+            box-shadow: 0 10px 18px rgba(24,169,87,.18); font-size: 12px; cursor: pointer; transition: all 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn.secondary { background: #fff; color: var(--text); border-color: var(--line); box-shadow: none; }
+        .btn.secondary:hover { background: #f9fafb; }
+
+        /* ── 内容区域 (Content) ── */
+        .content { padding: 18px; height: calc(100vh - 62px); min-height: 0; overflow-y: auto; background: var(--bg); }
+        
+        /* ── 功能专属补充样式 ── */
+        [x-cloak] { display: none !important; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body x-data="cohpApp()">
+
+<div class="app">
+    <!-- ═══ 左侧边栏 (Sidebar) ═══ -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="logo">C</div>
+            <div>
+                <div class="name">化学计算AI平台</div>
+                <div class="sub">Catalyst Workbench</div>
+            </div>
+        </div>
+        <div class="nav">
+            <div class="navTitle">平台主页</div>
+            
+            <div class="navTitle">智能模型</div>
+            
+            <div class="navTitle">催化剂结构</div>
+            <a href="#">晶体结构</a>
+            <a href="#">表面结构</a>
+            <a href="#">吸附结构</a>
+            <a href="#">纳米颗粒</a>
+            <a href="#">溶剂化结构</a>
+            
+            <div class="navTitle">催化剂性能</div>
+            <a href="#">结构优化</a>
+            <a href="#">电子结构</a>
+            <a href="#">过渡态</a>
+
+            <div class="navTitle">数据分析</div>
+            <a href="#">结构优化分析</a>
+            <a href="#">态密度 (DOS) 分析</a>
+            <a class="active" href="#">晶体轨道 (COHP)</a>
+        </div>
+    </aside>
+
+    <!-- ═══ 右侧主体 (Main) ═══ -->
+    <main class="main">
+        <!-- 顶部栏 -->
+        <div class="topbar">
+            <div>
+                <div class="crumb">数据分析 / 晶体轨道 (COHP)</div>
+                <div class="title">晶体轨道 (COHP) 分析</div>
+            </div>
+            <div class="right">
+                <button class="btn secondary flex items-center gap-2"><i data-lucide="bell" class="w-4 h-4"></i> 消息</button>
+                <div class="pill font-mono">User_01 / Online</div>
+            </div>
+        </div>
+        
+        <!-- 内容区 -->
+        <div class="content">
+            
+            <div class="max-w-7xl mx-auto space-y-6 pb-10">
+                
+                <!-- 1. 顶部控制面板 -->
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <h1 class="text-xl font-bold flex items-center gap-2 text-slate-900">
+                            <i data-lucide="link" class="text-emerald-600"></i> LOBSTER COHP / ICOHP 分析
+                        </h1>
+                    </div>
+
+                    <div class="flex flex-col md:flex-row gap-4 items-end">
+                        <div class="flex-1 w-full max-w-xl space-y-2">
+                            <label class="text-sm font-bold text-slate-700">LOBSTER 输出目录路径 (Output Directory)</label>
+                            <div class="relative flex items-center">
+                                <i data-lucide="folder" class="w-4 h-4 absolute left-3 text-slate-400"></i>
+                                <input type="text" x-model="inputValue" @keydown.enter="loadIcohpData" 
+                                       class="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm transition-colors font-mono" 
+                                       placeholder="例如: /data/vasp/VO2/lobster_calc">
+                            </div>
+                        </div>
+                        <button @click="loadIcohpData" :disabled="isLoading"
+                                class="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-colors flex items-center gap-2 disabled:opacity-70 h-[42px] shadow-sm shadow-emerald-600/20 border-none cursor-pointer">
+                            <i data-lucide="database" class="w-4 h-4" x-show="!isLoading"></i>
+                            <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isLoading" x-cloak></i>
+                            <span x-text="isLoading ? '解析中...' : '加载数据'"></span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 主体内容区：左侧表格 + 右侧图表 -->
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6" x-show="hasData" x-cloak>
+                    
+                    <!-- 2. 左侧：ICOHP 汇总表与筛选器 -->
+                    <div class="lg:col-span-5 bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[650px] relative overflow-hidden">
+                        <div class="bg-slate-50 px-4 py-3 border-b border-slate-200">
+                            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2 mb-3">
+                                <i data-lucide="filter" class="w-4 h-4 text-emerald-500"></i> 筛选化学键
+                            </h3>
+                            
+                            <!-- 筛选器面板 -->
+                            <div class="space-y-3">
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-bold text-slate-500 w-10">元素:</span>
+                                    <input type="text" x-model="filters.elem1" placeholder="例如 V" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="text" x-model="filters.elem2" placeholder="例如 O" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-xs font-bold text-slate-500 w-10">序号:</span>
+                                    <input type="number" x-model="filters.idx1" placeholder="最小" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                    <span class="text-slate-400">-</span>
+                                    <input type="number" x-model="filters.idx2" placeholder="最大" class="flex-1 px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-emerald-500 outline-none">
+                                </div>
+                                
+                                <!-- 确认筛选按钮 -->
+                                <div class="flex justify-end pt-1">
+                                    <button @click="applyFilter" class="px-4 py-1.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 text-xs font-bold rounded-lg transition-colors border-none cursor-pointer flex items-center gap-1">
+                                        <i data-lucide="search" class="w-3 h-3"></i> 确认筛选
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- 列表表头 -->
+                        <div class="grid grid-cols-12 gap-1 px-3 py-2 bg-white border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider items-center">
+                            <div class="col-span-1 text-center">选</div>
+                            <div class="col-span-3">键 (Bond)</div>
+                            <div class="col-span-2">长(Å)</div>
+                            <div class="col-span-2 text-right" title="Spin Up ICOHP">Up</div>
+                            <div class="col-span-2 text-right" title="Spin Down ICOHP">Down</div>
+                            <div class="col-span-2 text-right" title="Average ICOHP">Avg</div>
+                        </div>
+                        
+                        <!-- 列表内容 (使用 radio 强制单选) -->
+                        <div class="overflow-y-auto flex-1 pb-16">
+                            <template x-for="item in filteredData" :key="item.bond_label">
+                                <label class="grid grid-cols-12 gap-1 px-3 py-2 items-center hover:bg-slate-50 cursor-pointer border-b border-slate-50 transition-colors">
+                                    <div class="col-span-1 flex justify-center">
+                                        <input type="radio" name="bondSelection" :value="item.bond_label" x-model="selectedBond" class="text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer">
+                                    </div>
+                                    <div class="col-span-3 font-mono text-[12px] font-bold text-slate-700" x-text="item.element_pair + ' (' + item.bond_label + ')'"></div>
+                                    <div class="col-span-2 font-mono text-[11px] text-slate-500" x-text="item.length_Ang.toFixed(3)"></div>
+                                    <div class="col-span-2 font-mono text-[11px] text-right" :class="item.icohp_up < 0 ? 'text-emerald-600' : 'text-rose-600'" x-text="item.icohp_up.toFixed(3)"></div>
+                                    <div class="col-span-2 font-mono text-[11px] text-right" :class="item.icohp_down < 0 ? 'text-emerald-600' : 'text-rose-600'" x-text="item.icohp_down.toFixed(3)"></div>
+                                    <div class="col-span-2 font-mono text-[11px] font-bold text-right" :class="item.icohp_total < 0 ? 'text-emerald-600' : 'text-rose-600'" x-text="item.icohp_total.toFixed(3)"></div>
+                                </label>
+                            </template>
+                        </div>
+
+                        <!-- 底部固定操作栏 -->
+                        <div class="absolute bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-3 flex shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)]">
+                            <button @click="confirmAnalyze" :disabled="!selectedBond || isAnalyzing" class="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold rounded-lg transition-colors disabled:opacity-50 border-none cursor-pointer flex items-center justify-center gap-2">
+                                <i data-lucide="play" class="w-4 h-4" x-show="!isAnalyzing"></i>
+                                <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isAnalyzing" x-cloak></i>
+                                <span x-text="isAnalyzing ? '分析中...' : '确认分析'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 3. 右侧：COHP 曲线图表与结果导出 -->
+                    <div class="lg:col-span-7 bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex flex-col h-[650px]">
+                        <div class="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
+                            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                <i data-lucide="line-chart" class="w-4 h-4 text-emerald-500"></i> COHP / ICOHP 曲线
+                            </h3>
+                            
+                            <!-- 右侧结果分析 -->
+                            <div class="flex items-center gap-4">
+                                <label class="flex items-center gap-2 text-sm font-bold text-slate-600 cursor-pointer">
+                                    <input type="checkbox" x-model="includeOrbitals" class="rounded text-emerald-600 focus:ring-emerald-500 w-4 h-4">
+                                    包含轨道分解
+                                </label>
+                                <button @click="exportData" :disabled="!selectedBond || isExporting" title="导出选中键的数据" class="px-4 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-sm font-bold rounded-lg transition-colors disabled:opacity-50 cursor-pointer flex items-center gap-2 w-28 justify-center">
+                                    <i data-lucide="download" class="w-4 h-4" x-show="!isExporting"></i>
+                                    <i data-lucide="loader-2" class="w-4 h-4 animate-spin" x-show="isExporting" x-cloak></i>
+                                    <span x-text="isExporting ? '导出中...' : '导出数据'"></span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- 【核心修复】：移除 absolute 定位，赋予明确的 flex-1 和 min-height，保证图表高度不塌陷 -->
+                        <div id="cohpChart" class="w-full flex-1 min-h-[500px]"></div>
+                    </div>
+
+                </div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+    function cohpApp() {
+        return {
+            inputValue: '/data/vasp/VO2/lobster_calc',
+            isLoading: false,
+            isAnalyzing: false,
+            isExporting: false,
+            hasData: false,
+            
+            filters: { elem1: '', elem2: '', idx1: '', idx2: '' },
+            
+            icohpData: [],      
+            filteredData: [],   
+            selectedBond: null, 
+            
+            includeOrbitals: false,
+
+            init() {
+                this.$nextTick(() => { lucide.createIcons(); });
+                window.addEventListener('resize', () => {
+                    const dom = document.getElementById('cohpChart');
+                    if (dom) {
+                        const chart = echarts.getInstanceByDom(dom);
+                        if (chart) chart.resize();
+                    }
+                });
+            },
+
+            loadIcohpData() {
+                if (!this.inputValue) return;
+                this.isLoading = true;
+                
+                setTimeout(() => {
+                    let mockData = [];
+                    for(let i = 1; i <= 20; i++) {
+                        let isV = i % 2 !== 0;
+                        let upVal = -2.0 - Math.random() * 0.5;
+                        let downVal = -2.0 - Math.random() * 0.5;
+                        
+                        mockData.push({
+                            bond_label: String(240 + i),
+                            bond_index: 240 + i,
+                            atom1: isV ? 'V1' : 'O1',
+                            atom2: isV ? 'O2' : 'V2',
+                            element_pair: isV ? 'V-O' : 'O-V',
+                            length_Ang: 1.85 + Math.random() * 0.1,
+                            icohp_up: upVal,
+                            icohp_down: downVal,
+                            icohp_total: (upVal + downVal) / 2
+                        });
+                    }
+                    
+                    this.icohpData = mockData;
+                    this.filteredData = [...this.icohpData];
+                    this.selectedBond = null; 
+                    this.hasData = true;
+                    this.isLoading = false;
+                    
+                    // 使用 setTimeout 确保 DOM 完全展开后再初始化图表
+                    setTimeout(() => {
+                        this.initChart();
+                        lucide.createIcons();
+                    }, 100);
+                }, 800);
+            },
+
+            applyFilter() {
+                let e1 = this.filters.elem1.trim().toUpperCase();
+                let e2 = this.filters.elem2.trim().toUpperCase();
+                
+                this.filteredData = this.icohpData.filter(item => {
+                    let pairArr = item.element_pair.toUpperCase().split('-');
+                    let a = pairArr[0] || '';
+                    let b = pairArr[1] || '';
+                    
+                    let matchElem = true;
+                    if (e1 && e2) {
+                        matchElem = (a === e1 && b === e2) || (a === e2 && b === e1);
+                    } else if (e1) {
+                        matchElem = (a === e1 || b === e1);
+                    }
+                    return matchElem;
+                });
+                this.selectedBond = null; 
+            },
+
+            confirmAnalyze() {
+                if (!this.selectedBond) return;
+                this.isAnalyzing = true;
+                
+                setTimeout(() => {
+                    this.updateChartData();
+                    this.isAnalyzing = false;
+                }, 300); 
+            },
+
+            exportData() {
+                if (!this.selectedBond) return;
+                
+                this.isExporting = true;
+                const targetBond = this.selectedBond;
+                const hasOrb = this.includeOrbitals;
+                
+                setTimeout(() => {
+                    let csvContent = "Energy(eV),COHP_Up,COHP_Down";
+                    if (hasOrb) {
+                        csvContent += ",s_Up,s_Down,p_Up,p_Down,d_Up,d_Down";
+                    }
+                    csvContent += "\n";
+
+                    for (let e = -8; e <= 4; e += 0.1) {
+                        let energy = e.toFixed(2);
+                        let up = (Math.random() * 2 - 1).toFixed(4);
+                        let down = (Math.random() * 2 - 1).toFixed(4);
+                        let row = `${energy},${up},${down}`;
+
+                        if (hasOrb) {
+                            row += `,${(up*0.2).toFixed(4)},${(down*0.2).toFixed(4)},${(up*0.5).toFixed(4)},${(down*0.5).toFixed(4)},${(up*0.3).toFixed(4)},${(down*0.3).toFixed(4)}`;
+                        }
+                        csvContent += row + "\n";
+                    }
+
+                    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                    const link = document.createElement("a");
+                    const url = URL.createObjectURL(blob);
+                    
+                    link.setAttribute("href", url);
+                    link.setAttribute("download", `COHP_Bond_${targetBond}${hasOrb ? '_with_orbitals' : ''}.csv`);
+                    link.style.visibility = 'hidden';
+                    
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    this.isExporting = false; 
+                }, 600);
+            },
+
+            initChart() {
+                const dom = document.getElementById('cohpChart');
+                if (!dom) return;
+                
+                let chart = echarts.getInstanceByDom(dom);
+                if (!chart) {
+                    chart = echarts.init(dom);
+                }
+                
+                chart.setOption({
+                    tooltip: { trigger: 'axis' },
+                    legend: { top: 0, type: 'scroll' },
+                    grid: { left: '10%', right: '5%', bottom: '10%', top: '15%' },
+                    xAxis: { 
+                        type: 'value', name: 'Energy (eV)', nameLocation: 'middle', nameGap: 25,
+                        min: -8, max: 4, axisLine: { lineStyle: { color: '#64748b' } }
+                    },
+                    yAxis: { 
+                        type: 'value', name: '-COHP',
+                        axisLine: { show: true, lineStyle: { color: '#64748b' } },
+                        splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } }
+                    },
+                    series: []
+                });
+                
+                // 强制重置大小，防止高度塌陷
+                chart.resize();
+            },
+
+            updateChartData() {
+                const dom = document.getElementById('cohpChart');
+                if (!dom) return;
+                
+                let chart = echarts.getInstanceByDom(dom);
+                if (!chart) {
+                    this.initChart();
+                    chart = echarts.getInstanceByDom(dom);
+                }
+                
+                let series = [];
+                let energyData = [];
+                for (let e = -8; e <= 4; e += 0.1) {
+                    energyData.push(parseFloat(e.toFixed(2)));
+                }
+
+                const fermiLine = {
+                    symbol: ['none', 'none'],
+                    data: [{ xAxis: 0, name: 'Fermi Level' }],
+                    lineStyle: { color: '#ef4444', type: 'dashed', width: 1.5 },
+                    label: { show: false }
+                };
+
+                [this.selectedBond].forEach((bondLabel, index) => {
+                    let dataUp = [];
+                    let dataDown = [];
+                    
+                    energyData.forEach(e => {
+                        let val = Math.exp(-Math.pow(e + 2, 2) / 4) * 5 * (Math.random() * 0.5 + 0.5);
+                        if (e > 0) val = -val * 0.3;
+                        
+                        dataUp.push([e, parseFloat(val.toFixed(3))]);
+                        dataDown.push([e, parseFloat((-val * 0.8).toFixed(3))]); 
+                    });
+                    
+                    series.push({
+                        name: `Bond ${bondLabel} (Up)`,
+                        type: 'line',
+                        showSymbol: false,
+                        lineStyle: { width: 2 },
+                        data: dataUp,
+                        markLine: index === 0 ? fermiLine : null
+                    });
+                    
+                    series.push({
+                        name: `Bond ${bondLabel} (Down)`,
+                        type: 'line',
+                        showSymbol: false,
+                        lineStyle: { width: 2, type: 'dashed' }, 
+                        data: dataDown
+                    });
+                });
+
+                chart.setOption({ series: series }, { replaceMerge: ['series'] });
+                
+                // 渲染数据后再次强制重置大小
+                chart.resize();
+            }
+        }
+    }
+</script>
+</body>
+</html>
