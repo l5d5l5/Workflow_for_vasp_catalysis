@@ -14,7 +14,7 @@ from pymatgen.core.surface import Slab, SlabGenerator, center_slab
 from pymatgen.io.vasp import Poscar
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
-from ..utils.structure_utils import get_atomic_layers, parse_supercell_matrix, load_structure
+from .utils.structure_utils import get_atomic_layers, parse_supercell_matrix, load_structure
 
 class BulkToSlabGenerator:
     """
