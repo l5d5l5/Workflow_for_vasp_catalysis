@@ -1,73 +1,31 @@
-"""Modularized VASP input generation package."""
+# -*- coding: utf-8 -*-
+"""
+flow — VASP input-generation and workflow-orchestration package.
+flow — VASP 输入文件生成与工作流编排顶层包。
 
-from .constants import (
-    _BEEF_INCAR,
-    DEFAULT_INCAR_BULK,
-    DEFAULT_INCAR_SLAB,
-    DEFAULT_INCAR_STATIC,
-    DEFAULT_INCAR_NEB,
-    DEFAULT_INCAR_DIMER,
-    DEFAULT_INCAR_FREQ,
-    DEFAULT_INCAR_NBO,
-    DEFAULT_INCAR_LOBSTER,
-    DEFAULT_NBO_CONFIG_PARAMS,
-    MODULE_DIR,
-)
-from .input_sets import (
-    BulkRelaxSetEcat,
-    FreqSetEcat,
-    LobsterSetEcat,
-    MPStaticSetEcat,
-    NEBSetEcat,
-    SlabSetEcat,
-    NBOSetEcat,
-    DimerSetEcat,
-    VaspInputSetEcat,
-)
-from .maker import VaspInputMaker
-from .script import Script
-from .utils import (
-    convert_vasp_format_to_pymatgen_dict,
-    detect_adsorbate_indices,
-    formula_to_counts,
-    get_vasp_species_order,
-    infer_functional_from_incar,
-    load_structure,
-    pick_adsorbate_indices_by_formula_strict,
-    structure_element_counts,
-)
-from .kpoints import build_kpoints_by_lengths
+Package layout / 包结构:
+  flow/                     Core VASP I/O layer  /  核心 VASP 输入输出层
+    api.py                  FrontendAdapter: dict → VaspWorkflowParams
+    workflow_engine.py      WorkflowEngine: CalcType dispatch + INCAR merge
+    maker.py                VaspInputMaker: write_bulk, write_slab, …
+    input_sets.py           pymatgen InputSet subclasses
+    constants.py            INCAR templates and shared constants
+    kpoints.py              KPOINTS generation helpers
+    script.py               PBS/SLURM script rendering
+    utils.py                Structure loading utilities
 
-__all__ = [
-    "_BEEF_INCAR",
-    "BulkRelaxSetEcat",
-    "FreqSetEcat",
-    "LobsterSetEcat",
-    "MPStaticSetEcat",
-    "NEBSetEcat",
-    "NBOSetEcat",
-    "VaspInputSetEcat",
-    "DEFAULT_INCAR_BULK",
-    "DEFAULT_INCAR_SLAB",
-    "DEFAULT_INCAR_STATIC",
-    "DEFAULT_INCAR_NEB",
-    "DEFAULT_INCAR_DIMER",
-    "DEFAULT_INCAR_FREQ",
-    "DEFAULT_INCAR_NBO",
-    "DEFAULT_INCAR_LOBSTER",
-    "DEFAULT_NBO_CONFIG_PARAMS",
-    "MODULE_DIR",
-    "DimerSetEcat",
-    "SlabSetEcat",
-    "VaspInputMaker",
-    "Script",
-    "convert_vasp_format_to_pymatgen_dict",
-    "detect_adsorbate_indices",
-    "formula_to_counts",
-    "get_vasp_species_order",
-    "infer_functional_from_incar",
-    "load_structure",
-    "pick_adsorbate_indices_by_formula_strict",
-    "structure_element_counts",
-    "build_kpoints_by_lengths",
-]
+  flow/workflow/            Orchestration layer  /  编排层
+    config.py               params.yaml → WorkflowConfig dataclasses
+    hook.py                 Manifest expansion + PBS job submission
+    stages/                 Per-stage prepare() / check_success() classes
+    structure/              pymatgen structure generation helpers
+    extract.py              Standalone result-extraction CLI
+    markers.py              done.ok / submitted.json helpers
+    pbs.py                  DirLock, render_template, submit_job
+
+Import note / 导入说明:
+  flow.api and flow.workflow_engine are not re-exported here; every stage
+  class imports them directly via lazy imports inside _write_vasp_inputs().
+  flow.api 和 flow.workflow_engine 不在此处重导出；
+  每个 stage 类通过 _write_vasp_inputs() 内部的延迟导入直接引用它们。
+"""

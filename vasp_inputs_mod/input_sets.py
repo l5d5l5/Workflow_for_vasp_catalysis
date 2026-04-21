@@ -30,10 +30,14 @@ from .constants import (
     DEFAULT_INCAR_STATIC,
     DEFAULT_INCAR_DIMER,
     DEFAULT_INCAR_NBO,
+    DEFAULT_INCAR_NMR_CS,
+    DEFAULT_INCAR_NMR_EFG,
+    DEFAULT_INCAR_MD,
+    DEFAULT_INCAR_MD_NPT,
     DEFAULT_NBO_CONFIG_PARAMS,
     NBO_CONFIG_TEMPLATE,
     NBO_BASIS_PATH,
-    _BEEF_INCAR,
+    BEEF_INCAR_SETTINGS,
 )
 from .kpoints import build_kpoints_by_lengths
 from .utils import (
@@ -51,25 +55,43 @@ class VaspInputSetEcat:
         return load_structure(struct_source)
 
     def write_input(self, output_dir: Union[str, Path], *args: Any, **kwargs: Any):
-        """Wrap write_input to enforce safe LDAU behavior.
+        """Wrap write_input to enforce safe LDAU behavior and clean INCAR metadata.
 
-        Some upstream VASP input set implementations may default LDAU to True via their
-        internal YAML defaults (e.g., MPMetalRelaxSet). In that case, `self.user_incar_settings`
-        does not contain the final INCAR values, so we must patch the written file.
+        Post-processing steps:
+        1. Remove pymatgen metadata comments (@CLASS / @MODULE lines).
+        2. Force LDAU=False when no U values are provided.
         """
         result = super().write_input(output_dir, *args, **kwargs)
 
-        # Post-process the written INCAR to ensure +U is not enabled by accident.
-        out_path = Path(output_dir)
+        out_path  = Path(output_dir)
         incar_path = out_path / "INCAR"
+
         if incar_path.exists():
+            # ── Step 1：过滤 pymatgen 自动写入的元数据注释行 ──────────────────
+            raw_lines = incar_path.read_text(encoding="utf-8").splitlines()
+            clean_lines = [
+                line for line in raw_lines
+                if not line.strip().startswith(("@CLASS", "@MODULE"))
+            ]
+            incar_path.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+
+            # ── Step 2：重新读取清理后的 INCAR，检查 LDAU ─────────────────────
             incar = Incar.from_file(incar_path)
             if self._should_disable_ldau(incar):
                 logger.warning(
-                    "Detected LDAU=True in written INCAR without any LDAUL/LDAUU/LDAUJ; forcing LDAU=False."
+                    "Detected LDAU=True in written INCAR without any LDAUL/LDAUU/LDAUJ; "
+                    "forcing LDAU=False."
                 )
                 incar["LDAU"] = False
                 incar.write_file(incar_path)
+
+                # LDAU 修改后再次清理元数据（write_file 会重新写入）
+                raw_lines = incar_path.read_text(encoding="utf-8").splitlines()
+                clean_lines = [
+                    line for line in raw_lines
+                    if not line.strip().startswith(("@CLASS", "@MODULE"))
+                ]
+                incar_path.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
 
         return result
 
@@ -87,7 +109,7 @@ class VaspInputSetEcat:
             incar.update(default_incar)
 
         if "BEEF" in functional.upper():
-            incar.update(_BEEF_INCAR)
+            incar.update(BEEF_INCAR_SETTINGS)
 
         if extra_incar:
             incar.update(extra_incar)
@@ -712,19 +734,34 @@ class DimerSetEcat(MPStaticSetEcat):
         modecar: Union[str, Path, np.ndarray],
         **kwargs,
     ):
-        #MODECAR以数组的形式存入内存最为合适。
         if modecar is None:
             raise ValueError("CRITICAL ERROR: 'modecar' must be provided! ")
         if isinstance(modecar, (str, Path)):
             modecar_path = Path(modecar).resolve()
             if not modecar_path.exists():
-                raise FileNotFoundError(f"Provided MODECAR file does not exist: {modecar_path}")        
+                raise FileNotFoundError(f"Provided MODECAR file does not exist: {modecar_path}")
             self.modecar_data = np.loadtxt(modecar_path)
         elif isinstance(modecar, np.ndarray):
             self.modecar_data = modecar
         else:
             raise TypeError("'modecar' must be either a numpy array or a valid file path.")
-        super().__init__(structure=structure, **kwargs)
+
+        # Apply DEFAULT_INCAR_DIMER on top of any user_incar_settings, but only
+        # when use_default_incar=True (the same pattern used by all other Set classes).
+        use_default = kwargs.pop("use_default_incar", True)
+        user_incar = dict(kwargs.pop("user_incar_settings", None) or {})
+        functional = kwargs.get("functional", "PBE")
+        merged_incar = self._build_incar(
+            functional,
+            DEFAULT_INCAR_DIMER if use_default else None,
+            user_incar_settings=user_incar or None,
+        )
+        super().__init__(
+            structure=structure,
+            use_default_incar=False,
+            user_incar_settings=merged_incar,
+            **kwargs,
+        )
 
     def write_input(self, output_dir: Union[str, Path], **kwargs):
         super().write_input(output_dir, **kwargs)
@@ -911,7 +948,23 @@ class NBOSetEcat(MPStaticSetEcat):
                 f"CRITICAL: Missing basis set definitions for elements: {missing_elements}. "
             )
 
-        super().__init__(structure=loaded_structure, **kwargs)
+        # Apply DEFAULT_INCAR_NBO on top of any user_incar_settings (same pattern as
+        # LobsterSetEcat, NMRSetEcat, etc.).  We must intercept use_default_incar here
+        # so that MPStaticSetEcat doesn't stomp it with DEFAULT_INCAR_STATIC instead.
+        use_default = kwargs.pop("use_default_incar", True)
+        user_incar = dict(kwargs.pop("user_incar_settings", None) or {})
+        functional = kwargs.get("functional", "PBE")
+        merged_incar = self._build_incar(
+            functional,
+            DEFAULT_INCAR_NBO if use_default else None,
+            user_incar_settings=user_incar or None,
+        )
+        super().__init__(
+            structure=loaded_structure,
+            use_default_incar=False,
+            user_incar_settings=merged_incar,
+            **kwargs,
+        )
 
         ispin = int(self.incar.get("ISPIN", 1))
         if ispin == 2:
@@ -1048,3 +1101,410 @@ class NBOSetEcat(MPStaticSetEcat):
                 f.write(f"{el}     0\n")
                 f.write(self.basis_settings[el] + "\n")
                 f.write("****\n")
+
+
+class NMRSetEcat(MPStaticSetEcat):
+    """
+    用于 VASP NMR 计算的输入文件生成器。
+
+    支持两种模式：
+    - ``"cs"``：化学位移（Chemical Shift），启用 LCHIMAG。
+    - ``"efg"``：电场梯度（Electric Field Gradient），启用 LEFG 并自动设置 QUAD_EFG。
+
+    Args:
+        structure (str | Path | Structure): 输入结构或前序计算目录。
+        mode (str): NMR 计算模式，``"cs"`` 或 ``"efg"``。默认 ``"cs"``。
+        isotopes (list[str]): EFG 模式下用于四极矩的同位素列表，格式如 ``["Li-7", "O-17"]``。
+            对 CS 模式无效。
+        functional (str): 交换关联泛函，默认 ``"PBE"``。
+        use_default_incar (bool): 是否应用对应模式的默认 INCAR 参数。默认 True。
+        use_default_kpoints (bool): 是否自动生成默认 KPOINTS。默认 True。
+        kpoints_density (int): 倒空间 k 点密度（用于 Gamma-centered 网格）。默认 100。
+        user_incar_settings (dict): 用户自定义 INCAR 参数（优先级最高）。
+        user_kpoints_settings: 用户自定义 KPOINTS 对象。
+        **extra_kwargs: 其他传递给底层 MPStaticSetEcat 的关键字参数。
+    """
+
+    def __init__(
+        self,
+        structure: Union[str, Structure, Path],
+        mode: str = "cs",
+        isotopes: Optional[List[str]] = None,
+        functional: str = "PBE",
+        use_default_incar: bool = True,
+        use_default_kpoints: bool = True,
+        kpoints_density: int = 100,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        self.mode = mode.lower()
+        self.isotopes = isotopes or []
+
+        if self.mode not in ("cs", "efg"):
+            raise ValueError(f"NMR mode must be 'cs' or 'efg', got '{mode}'.")
+
+        loaded_structure = self._load_structure(structure)
+        functional = (functional or "PBE").upper()
+
+        # 根据模式选择默认 INCAR 参数
+        if self.mode == "cs":
+            default_nmr_incar = DEFAULT_INCAR_NMR_CS
+        else:
+            default_nmr_incar = dict(DEFAULT_INCAR_NMR_EFG)
+            # EFG 模式：根据结构自动计算 QUAD_EFG
+            if loaded_structure is not None:
+                isotope_map = {iso.split("-")[0]: iso for iso in self.isotopes}
+                try:
+                    from pymatgen.core import Species as PmgSpecies
+                    quad_efg = [
+                        float(PmgSpecies(sp.name).get_nmr_quadrupole_moment(isotope_map.get(sp.name)))
+                        for sp in loaded_structure.species
+                    ]
+                    default_nmr_incar["QUAD_EFG"] = quad_efg
+                except Exception as exc:
+                    logger.warning("Failed to auto-calculate QUAD_EFG: %s. Set it manually via user_incar_settings.", exc)
+
+        incar = self._build_incar(
+            functional,
+            default_nmr_incar if use_default_incar else None,
+            user_incar_settings=user_incar_settings,
+        )
+
+        kpoints = self._resolve_kpoints(
+            loaded_structure,
+            use_default_kpoints,
+            user_kpoints_settings,
+            kpoints_density,
+        )
+
+        super().__init__(
+            structure=loaded_structure,
+            functional=functional,
+            use_default_incar=False,
+            use_default_kpoints=False,
+            user_incar_settings=incar,
+            user_kpoints_settings=kpoints,
+            **extra_kwargs,
+        )
+
+    @classmethod
+    def from_prev_calc_ecat(
+        cls,
+        prev_dir: Union[str, Path],
+        mode: str = "cs",
+        isotopes: Optional[List[str]] = None,
+        kpoints_density: int = 100,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        """从前序计算目录继承结构与 INCAR，生成 NMR 计算任务。
+
+        Args:
+            prev_dir (str | Path): 前序计算目录（含 INCAR、CONTCAR/POSCAR、KPOINTS）。
+            mode (str): NMR 模式，``"cs"`` 或 ``"efg"``。
+            isotopes (list[str]): EFG 四极矩同位素列表。
+            kpoints_density (int): 默认 k 点密度（当 prev_dir 中无 KPOINTS 时使用）。
+            user_incar_settings (dict): 用户自定义 INCAR（优先级最高）。
+            user_kpoints_settings: 用户自定义 KPOINTS。
+            **extra_kwargs: 其他关键字参数。
+        """
+        prev_dir = Path(prev_dir).resolve()
+        loaded_structure = cls._load_structure(prev_dir)
+        base_incar, functional = cls._read_and_convert_incar(prev_dir / "INCAR", loaded_structure)
+
+        # 移除与静态/松弛相关、在 NMR 中无意义的 INCAR 标签
+        for k in ["IBRION", "NSW", "POTIM", "EDIFF", "EDIFFG", "ISIF", "NPAR", "NCORE",
+                  "LCHIMAG", "LEFG", "QUAD_EFG", "LNMR_SYM_RED", "NLSPLINE"]:
+            base_incar.pop(k, None)
+
+        mode_lower = mode.lower()
+        if mode_lower not in ("cs", "efg"):
+            raise ValueError(f"NMR mode must be 'cs' or 'efg', got '{mode}'.")
+
+        if mode_lower == "cs":
+            extra_nmr = dict(DEFAULT_INCAR_NMR_CS)
+        else:
+            extra_nmr = dict(DEFAULT_INCAR_NMR_EFG)
+            isotopes = isotopes or []
+            isotope_map = {iso.split("-")[0]: iso for iso in isotopes}
+            try:
+                from pymatgen.core import Species as PmgSpecies
+                quad_efg = [
+                    float(PmgSpecies(sp.name).get_nmr_quadrupole_moment(isotope_map.get(sp.name)))
+                    for sp in loaded_structure.species
+                ]
+                extra_nmr["QUAD_EFG"] = quad_efg
+            except Exception as exc:
+                logger.warning("Failed to auto-calculate QUAD_EFG: %s. Set it manually via user_incar_settings.", exc)
+
+        incar = cls._build_incar(
+            functional,
+            base_incar,
+            extra_incar=extra_nmr,
+            user_incar_settings=user_incar_settings,
+        )
+
+        kpoints = user_kpoints_settings
+        if kpoints is None:
+            try:
+                kpoints = Kpoints.from_file(prev_dir / "KPOINTS")
+            except FileNotFoundError:
+                logger.warning("KPOINTS not found in %s, generating default with density=%d.", prev_dir, kpoints_density)
+                kpoints = cls._make_kpoints_from_density(loaded_structure, kpoints_density)
+
+        init_kwargs = extra_kwargs.copy()
+        init_kwargs.update(
+            {
+                "structure": loaded_structure,
+                "mode": mode,
+                "isotopes": isotopes,
+                "functional": functional,
+                "use_default_incar": False,
+                "use_default_kpoints": False,
+                "user_incar_settings": incar,
+                "user_kpoints_settings": kpoints,
+            }
+        )
+        return cls(**init_kwargs)
+
+
+class MDSetEcat(MPStaticSetEcat):
+    """
+    用于 VASP 分子动力学（MD）计算的输入文件生成器。
+
+    支持两种系综：
+    - ``"nvt"``：NVT（正则系综），对应 MPMDSet 风格。
+    - ``"npt"``：NPT（等温等压系综），对应 MVLNPTMDSet 风格，使用 Langevin 控温控压。
+
+    Args:
+        structure (str | Path | Structure): 输入结构或前序计算目录。
+        ensemble (str): MD 系综，``"nvt"`` 或 ``"npt"``。默认 ``"nvt"``。
+        start_temp (float): 起始温度（K）。默认 300.0。
+        end_temp (float): 终止温度（K），与 start_temp 相同则为恒温 MD。默认 300.0。
+        nsteps (int): MD 步数（NSW）。默认 1000。
+        time_step (float | None): 时间步长（fs）。为 None 时自动判断：含 H 为 0.5 fs，否则为 2.0 fs。
+            NPT 系综时默认 2.0 fs（不自动调整）。
+        spin_polarized (bool): 是否开启自旋极化（ISPIN=2）。默认 False。
+        langevin_gamma (list[float] | None): NPT 模式下各元素的 Langevin 阻尼系数（LANGEVIN_GAMMA）。
+            为 None 时自动设置为 ``[10] * n_elems``。
+        functional (str): 交换关联泛函，默认 ``"PBE"``。
+        use_default_incar (bool): 是否应用对应系综的默认 INCAR 参数。默认 True。
+        user_incar_settings (dict): 用户自定义 INCAR 参数（优先级最高）。
+        user_kpoints_settings: 用户自定义 KPOINTS（默认使用 Gamma-only 1×1×1）。
+        **extra_kwargs: 其他传递给底层 MPStaticSetEcat 的关键字参数。
+    """
+
+    def __init__(
+        self,
+        structure: Union[str, Structure, Path],
+        ensemble: str = "nvt",
+        start_temp: float = 300.0,
+        end_temp: float = 300.0,
+        nsteps: int = 1000,
+        time_step: Optional[float] = None,
+        spin_polarized: bool = False,
+        langevin_gamma: Optional[List[float]] = None,
+        functional: str = "PBE",
+        use_default_incar: bool = True,
+        use_default_kpoints: bool = True,  # accepted but ignored — MD always uses Gamma-only
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        self.ensemble = ensemble.lower()
+        self.start_temp = start_temp
+        self.end_temp = end_temp
+        self.nsteps = nsteps
+        self.time_step = time_step
+        self.spin_polarized = spin_polarized
+        self.langevin_gamma = langevin_gamma
+
+        if self.ensemble not in ("nvt", "npt"):
+            raise ValueError(f"MD ensemble must be 'nvt' or 'npt', got '{ensemble}'.")
+
+        loaded_structure = self._load_structure(structure)
+        functional = (functional or "PBE").upper()
+
+        # 构建与系综相关的 INCAR 更新
+        md_extra = self._build_md_incar(loaded_structure)
+
+        if self.ensemble == "nvt":
+            base_default = DEFAULT_INCAR_MD if use_default_incar else None
+        else:
+            base_default = DEFAULT_INCAR_MD_NPT if use_default_incar else None
+
+        incar = self._build_incar(
+            functional,
+            base_default,
+            extra_incar=md_extra,
+            user_incar_settings=user_incar_settings,
+        )
+
+        # MD 使用 Gamma-only 1×1×1 k 点
+        kpoints = user_kpoints_settings if user_kpoints_settings is not None else Kpoints.gamma_automatic()
+
+        super().__init__(
+            structure=loaded_structure,
+            functional=functional,
+            use_default_incar=False,
+            use_default_kpoints=False,
+            user_incar_settings=incar,
+            user_kpoints_settings=kpoints,
+            **extra_kwargs,
+        )
+
+    def _build_md_incar(self, structure: Structure) -> Dict[str, Any]:
+        """根据系综和参数构建 MD 专属 INCAR 更新字典。"""
+        updates: Dict[str, Any] = {
+            "TEBEG": self.start_temp,
+            "TEEND": self.end_temp,
+            "NSW": self.nsteps,
+            "ISPIN": 2 if self.spin_polarized else 1,
+        }
+
+        if not self.spin_polarized:
+            updates["MAGMOM"] = None
+
+        if self.ensemble == "nvt":
+            # NVT：EDIFF_PER_ATOM 控制每原子收敛精度
+            updates["EDIFF_PER_ATOM"] = 0.00001
+
+            # 自动判断时间步长
+            if self.time_step is None:
+                # 检查结构中是否含有氢原子（含 H 用小步长）
+                has_hydrogen = any(el.symbol == "H" for el in structure.composition.elements)
+                if has_hydrogen:
+                    updates["POTIM"] = 0.5
+                    updates["NSW"] = self.nsteps * 4  # 补偿步数
+                else:
+                    updates["POTIM"] = 2.0
+            else:
+                updates["POTIM"] = self.time_step
+
+        else:  # npt
+            updates["EDIFF_PER_ATOM"] = 0.000001
+            updates["POTIM"] = self.time_step if self.time_step is not None else 2.0
+
+            # Langevin 控温：每个不同元素对应一个阻尼系数
+            n_elems = structure.n_elems
+            gamma = self.langevin_gamma if self.langevin_gamma is not None else [10.0] * n_elems
+            updates["LANGEVIN_GAMMA"] = gamma
+
+            # NPT：ENCUT 设为 1.5 × VASP 默认最大值以消除 Pulay 应力
+            # （在 write_input 后处理，此处标记为占位符）
+            updates["_npt_encut_auto"] = True
+
+        return updates
+
+    def write_input(self, output_dir: Union[str, Path], **kwargs):
+        """写入 VASP 输入文件；NPT 模式下额外修正 ENCUT。"""
+        super().write_input(output_dir, **kwargs)
+
+        if self.ensemble == "npt":
+            out_path = Path(output_dir).resolve()
+            incar_path = out_path / "INCAR"
+            potcar_path = out_path / "POTCAR"
+
+            if incar_path.exists() and potcar_path.exists():
+                try:
+                    from pymatgen.io.vasp.inputs import Potcar as PmgPotcar
+                    potcar = PmgPotcar.from_file(potcar_path)
+                    enmax_vals = [p.keywords["ENMAX"] for p in potcar]
+                    encut_npt = max(enmax_vals) * 1.5
+
+                    incar = Incar.from_file(incar_path)
+                    incar.pop("_npt_encut_auto", None)
+                    incar["ENCUT"] = encut_npt
+                    incar.write_file(incar_path)
+                    logger.info("NPT MD: set ENCUT=%.1f eV (1.5 × ENMAX) in %s", encut_npt, incar_path)
+                except Exception as exc:
+                    logger.warning("Failed to auto-set NPT ENCUT from POTCAR: %s. Set ENCUT manually.", exc)
+            else:
+                # 如果没有 POTCAR，清理占位符标记
+                if incar_path.exists():
+                    incar = Incar.from_file(incar_path)
+                    incar.pop("_npt_encut_auto", None)
+                    incar.write_file(incar_path)
+
+    @classmethod
+    def from_prev_calc_ecat(
+        cls,
+        prev_dir: Union[str, Path],
+        ensemble: str = "nvt",
+        start_temp: float = 300.0,
+        end_temp: float = 300.0,
+        nsteps: int = 1000,
+        time_step: Optional[float] = None,
+        spin_polarized: bool = False,
+        langevin_gamma: Optional[List[float]] = None,
+        user_incar_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
+        **extra_kwargs,
+    ):
+        """从前序计算目录继承结构与泛函，生成 MD 计算任务。
+
+        Notes:
+            - 继承前序 INCAR 的泛函设置（如 PBE/BEEF）。
+            - 移除与结构优化/静态计算相关的标签，仅保留通用设置。
+            - MD 特有参数（TEBEG/TEEND/NSW/POTIM 等）由构造函数重新设置。
+
+        Args:
+            prev_dir (str | Path): 前序计算目录（含 INCAR、CONTCAR/POSCAR）。
+            ensemble (str): MD 系综，``"nvt"`` 或 ``"npt"``。
+            start_temp (float): 起始温度（K）。
+            end_temp (float): 终止温度（K）。
+            nsteps (int): MD 步数。
+            time_step (float | None): 时间步长（fs），None 时自动判断。
+            spin_polarized (bool): 是否开启自旋极化。
+            langevin_gamma (list[float] | None): NPT 模式 Langevin 阻尼系数。
+            user_incar_settings (dict): 用户自定义 INCAR。
+            user_kpoints_settings: 用户自定义 KPOINTS。
+            **extra_kwargs: 其他关键字参数。
+        """
+        prev_dir = Path(prev_dir).resolve()
+        loaded_structure = cls._load_structure(prev_dir)
+        base_incar, functional = cls._read_and_convert_incar(prev_dir / "INCAR", loaded_structure)
+
+        # 移除静态/松弛计算专属标签，由 MD 默认值重新设定
+        for k in ["IBRION", "NSW", "POTIM", "EDIFF", "EDIFFG", "ISIF",
+                  "NPAR", "NCORE", "TEBEG", "TEEND", "SMASS", "ISYM",
+                  "ISMEAR", "SIGMA", "NELMIN", "LCHARG", "LWAVE",
+                  "EDIFF_PER_ATOM", "MDALGO", "LANGEVIN_GAMMA", "LANGEVIN_GAMMA_L",
+                  "PMASS", "PSTRESS", "ENCUT"]:
+            base_incar.pop(k, None)
+
+        ensemble_lower = ensemble.lower()
+        if ensemble_lower not in ("nvt", "npt"):
+            raise ValueError(f"MD ensemble must be 'nvt' or 'npt', got '{ensemble}'.")
+
+        extra_md = DEFAULT_INCAR_MD if ensemble_lower == "nvt" else DEFAULT_INCAR_MD_NPT
+        incar = cls._build_incar(
+            functional,
+            base_incar,
+            extra_incar=extra_md,
+            user_incar_settings=user_incar_settings,
+        )
+
+        # MD 使用 Gamma-only k 点
+        kpoints = user_kpoints_settings if user_kpoints_settings is not None else Kpoints.gamma_automatic()
+
+        init_kwargs = extra_kwargs.copy()
+        init_kwargs.update(
+            {
+                "structure": loaded_structure,
+                "ensemble": ensemble,
+                "start_temp": start_temp,
+                "end_temp": end_temp,
+                "nsteps": nsteps,
+                "time_step": time_step,
+                "spin_polarized": spin_polarized,
+                "langevin_gamma": langevin_gamma,
+                "functional": functional,
+                "use_default_incar": False,
+                "user_incar_settings": incar,
+                "user_kpoints_settings": kpoints,
+            }
+        )
+        return cls(**init_kwargs)

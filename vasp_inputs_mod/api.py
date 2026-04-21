@@ -1,0 +1,1875 @@
+# -*- coding: utf-8 -*-
+"""
+flow.api — Frontend-to-engine adapter layer
+============================================
+
+Position in the write pipeline
+-------------------------------
+::
+
+    Stage.prepare()                     (flow/workflow/stages/*.py)
+        └─ BaseStage._write_vasp_inputs()
+               └─ FrontendAdapter.from_frontend_dict()   ← THIS FILE
+                        └─ VaspWorkflowParams.to_workflow_config()
+                                 └─ WorkflowEngine.run()  (flow/workflow_engine.py)
+                                          └─ VaspInputMaker.write_*()  (flow/maker.py)
+                                                   └─ InputSet.write_input()  (flow/input_sets.py)
+                                                            └─ POSCAR / INCAR / KPOINTS / POTCAR  (disk)
+
+Responsibilities
+----------------
+1. Accept a simple ``frontend_dict`` (calc_type string, xc, kpoints density,
+   user_incar_settings, prev_dir, lobsterin, …) and validate/normalise it into
+   a typed ``VaspWorkflowParams`` object.
+2. Convert ``VaspWorkflowParams`` to the engine's ``WorkflowConfig`` via
+   ``to_workflow_config()``, mapping frontend names to ``CalcType`` enum values
+   and fanning out sub-module parameters (frequency, lobster, NBO, …).
+
+Extension points — where to touch this file
+-------------------------------------------
+- **New calc type**: add an entry to ``FRONTEND_CALC_TYPE_MAP`` and a matching
+  case in ``VaspWorkflowParams.to_workflow_config()``'s ``calc_type_map``.
+- **New frontend param group**: add a ``FrontendXxxParams`` dataclass, extract
+  it in ``from_frontend_dict()``, and transfer it in ``to_workflow_config()``.
+- **New lobsterin/NBO field**: extend ``FrontendLobsterParams`` /
+  ``FrontendNBOParams``, extract from ``data`` in ``from_frontend_dict()``, and
+  set the matching ``WorkflowConfig`` field in ``to_workflow_config()``.
+
+本模块是前端数据字典到引擎工作流配置的适配层。
+
+职责
+----
+1. 接受前端传入的简单字典（包含 calc_type 字符串、交换关联泛函、K 点密度、
+   用户 INCAR 设置、前序目录、lobsterin 等），将其验证并规范化为带类型的
+   ``VaspWorkflowParams`` 对象。
+2. 通过 ``to_workflow_config()`` 将 ``VaspWorkflowParams`` 转换为引擎所需的
+   ``WorkflowConfig``，把前端字符串名称映射为 ``CalcType`` 枚举值，并展开各
+   子模块参数（频率、Lobster、NBO 等）。
+
+扩展点
+------
+- **新计算类型**：在 ``FRONTEND_CALC_TYPE_MAP`` 中添加条目，并在
+  ``VaspWorkflowParams.to_workflow_config()`` 的 ``calc_type_map`` 中添加对应分支。
+- **新前端参数组**：新增 ``FrontendXxxParams`` 数据类，在 ``from_frontend_dict()``
+  中提取，并在 ``to_workflow_config()`` 中传递。
+- **新 lobsterin/NBO 字段**：扩展 ``FrontendLobsterParams`` /
+  ``FrontendNBOParams``，从 ``from_frontend_dict()`` 的 ``data`` 中提取，并在
+  ``to_workflow_config()`` 中设置 ``WorkflowConfig`` 的对应字段。
+"""
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+from pymatgen.core import Structure
+
+from .workflow_engine import CalcType, WorkflowConfig, WorkflowEngine
+from .script import Script, CalcCategory
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# 前端参数定义（FrontendParams）
+# ============================================================================
+
+@dataclass
+class FrontendStructureInput:
+    """Frontend structure input descriptor.
+
+    Supports three source types:
+    - ``"file"``: uploaded file content (``content``) or local file path (``id``).
+    - ``"library"``: select from a predefined structure library (``id`` is the
+      library identifier).
+    - ``"task"``: retrieve from a previous task's output directory (``id`` is the
+      task directory path).
+
+    Attributes:
+        source: Source type — one of ``"file"``, ``"library"``, or ``"task"``.
+        id: Identifier — file name, library ID, or task directory path.
+        content: Raw file content, used when ``source="file"`` and the file is
+            uploaded directly (rather than referenced by path).
+
+    前端结构输入参数。
+
+    支持三种来源：
+    - ``"file"``：上传的文件内容（``content``）或本地文件路径（``id``）。
+    - ``"library"``：从预定义结构库中选择（``id`` 为库中的结构标识符）。
+    - ``"task"``：从之前任务的结果目录中获取（``id`` 为任务目录路径）。
+
+    属性：
+        source: 来源类型，取值为 ``"file"``、``"library"`` 或 ``"task"``。
+        id: 标识符——文件名、库 ID 或任务路径。
+        content: 文件原始内容，当 ``source="file"`` 且直接上传文件（而非路径引用）时使用。
+    """
+    source: str = "file"
+    id: str = ""
+    content: str = ""
+
+    def to_path_or_content(self) -> Union[str, Path]:
+        """Resolve the structure input to a file path or raw content string.
+
+        Returns:
+            - ``source="file"``: returns ``content`` if non-empty, otherwise ``id``.
+            - ``source="library"``: returns ``id`` and emits a warning that library
+              support must be separately implemented.
+            - ``source="task"``: returns ``id`` after verifying the directory exists;
+              raises ``FileNotFoundError`` if not found.
+            - Unknown source: returns ``id`` with a warning.
+
+        将结构输入解析为文件路径或原始内容字符串。
+
+        返回：
+            - ``source="file"``：若 ``content`` 非空则返回之，否则返回 ``id``。
+            - ``source="library"``：返回 ``id`` 并发出警告（需要结构库支持）。
+            - ``source="task"``：验证目录存在后返回 ``id``；不存在则抛出
+              ``FileNotFoundError``。
+            - 未知来源：返回 ``id`` 并发出警告。
+        """
+        if self.source == "file":
+            return self.content if self.content else self.id
+        elif self.source == "library":
+            logger.warning(
+                "FrontendStructureInput source='library' 需要结构库支持。"
+                "当前返回 id='%s'，请确保该标识符在结构库中有效。", self.id
+            )
+            return self.id
+        elif self.source == "task":
+            task_path = Path(self.id)
+            if not task_path.exists():
+                raise FileNotFoundError(
+                    f"FrontendStructureInput source='task'，但任务目录不存在: {self.id}"
+                )
+            return self.id
+        else:
+            logger.warning("未知的 FrontendStructureInput source='%s'，回退到使用 id", self.source)
+            return self.id
+
+
+@dataclass
+class FrontendPrecisionParams:
+    """Precision / convergence parameters exposed to the frontend.
+
+    All fields map directly to VASP INCAR tags.  ``None`` means "use the
+    InputSet default" and the field is omitted from ``user_incar_overrides``.
+
+    Attributes:
+        encut:  Plane-wave energy cutoff in eV (ENCUT).
+        ediff:  Electronic convergence criterion in eV (EDIFF).
+        ediffg: Ionic convergence criterion in eV or eV/Å (EDIFFG).
+        nedos:  Number of DOS grid points (NEDOS).
+
+    精度/收敛参数——前端暴露。
+
+    所有字段直接映射到 VASP INCAR 标记。``None`` 表示"使用 InputSet 默认值"，
+    该字段不会被写入 ``user_incar_overrides``。
+
+    属性：
+        encut:  平面波截断能（eV），对应 ENCUT。
+        ediff:  电子自洽收敛判据（eV），对应 EDIFF。
+        ediffg: 离子弛豫收敛判据（eV 或 eV/Å），对应 EDIFFG。
+        nedos:  态密度网格点数，对应 NEDOS。
+    """
+    encut: Optional[int] = None
+    ediff: Optional[float] = None
+    ediffg: Optional[float] = None
+    nedos: Optional[int] = None
+
+
+@dataclass
+class FrontendKpointParams:
+    """K-point sampling parameters exposed to the frontend.
+
+    Attributes:
+        density:         Reciprocal-space k-point density (points per Å⁻¹).
+        gamma_centered:  If ``True``, use Gamma-centred mesh; otherwise shifted.
+
+    K 点采样参数——前端暴露。
+
+    属性：
+        density:         倒空间 K 点密度（每 Å⁻¹ 的点数）。
+        gamma_centered:  ``True`` 表示使用 Gamma 中心网格，否则使用偏移网格。
+    """
+    density: Optional[float] = None
+    gamma_centered: bool = True
+
+
+@dataclass
+class FrontendMagmomParams:
+    """Magnetic moment parameters exposed to the frontend.
+
+    Supports two input formats:
+    - ``per_atom``: ``List[float]`` — site-ordered moments,
+      e.g. ``[5.0, 5.0, 3.0, 3.0]``.
+    - ``per_element``: ``Dict[str, float]`` — element-keyed moments,
+      e.g. ``{"Fe": 5.0, "Co": 3.0}``.
+
+    pymatgen ``user_incar_settings["MAGMOM"]`` expects a per-site
+    ``List[float]``.  ``to_pymatgen_format()`` returns the correct type for
+    use in ``to_workflow_config()``.
+
+    磁矩参数——前端暴露。
+
+    支持两种格式：
+    - ``per_atom``：``List[float]``，按原子顺序排列，如 ``[5.0, 5.0, 3.0, 3.0]``。
+    - ``per_element``：``Dict[str, float]``，按元素键值，如 ``{"Fe": 5.0, "Co": 3.0}``。
+
+    pymatgen ``user_incar_settings["MAGMOM"]`` 期望 ``List[float]``（per-site）。
+    ``to_pymatgen_format()`` 返回正确类型，供 ``to_workflow_config()`` 使用。
+    """
+    enabled: bool = False
+    per_atom: Optional[List[float]] = None
+    per_element: Dict[str, float] = field(default_factory=dict)
+
+    def to_pymatgen_format(self) -> Optional[List[float]]:
+        """Return the per-site ``List[float]`` expected by pymatgen.
+
+        - ``per_atom`` takes priority: returned directly.
+        - ``per_element``: returns ``None``; the caller should expand the dict
+          against the structure's site order after the structure is loaded.
+
+        Returns:
+            Per-site moment list, or ``None`` if disabled or only
+            ``per_element`` data is available.
+
+        返回 pymatgen 期望的 per-site ``List[float]``。
+
+        - ``per_atom`` 优先：直接返回列表。
+        - ``per_element``：返回 ``None``；调用方应在加载结构后按位点顺序展开该字典。
+
+        返回：
+            per-site 磁矩列表，若未启用或仅有 ``per_element`` 数据则返回 ``None``。
+        """
+        if not self.enabled:
+            return None
+        if self.per_atom:
+            return [float(v) for v in self.per_atom]
+        return None
+
+    def to_incar_format(self) -> Optional[str]:
+        """Return the VASP MAGMOM string for direct INCAR writing.
+
+        Kept for backward compatibility with code paths that write INCAR tags
+        directly rather than via pymatgen InputSet.
+
+        Returns:
+            Space-separated moment string, or ``None`` if disabled.
+
+        返回 VASP MAGMOM 字符串，用于直接写 INCAR 的兼容场景。
+
+        保留该方法以兼容不经由 pymatgen InputSet 而直接写 INCAR 标记的代码路径。
+
+        返回：
+            空格分隔的磁矩字符串，若未启用则返回 ``None``。
+        """
+        if not self.enabled:
+            return None
+        if self.per_atom:
+            return " ".join(str(v) for v in self.per_atom)
+        if self.per_element:
+            return " ".join(f"{k} {v}" for k, v in self.per_element.items())
+        return None
+
+    @property
+    def values(self) -> Dict[str, float]:
+        """Compatibility alias for ``per_element``.
+
+        ``per_element`` 的兼容性别名。
+        """
+        return self.per_element
+
+    @values.setter
+    def values(self, val: Dict[str, float]):
+        # Redirect legacy attribute writes to the canonical field.
+        # 将旧属性写操作重定向到规范字段。
+        self.per_element = val
+
+
+@dataclass
+class FrontendDFTPlusUParams:
+    """DFT+U (Hubbard U) parameters exposed to the frontend.
+
+    ``values`` format::
+
+        {"Fe": {"LDAUU": 4.0, "LDAUL": 2, "LDAUJ": 0.0},
+         "Co": {"LDAUU": 3.0, "LDAUL": 2, "LDAUJ": 0.0}}
+
+    pymatgen ``user_incar_settings`` expects three separate dicts::
+
+        LDAUU = {"Fe": 4.0, "Co": 3.0}   # Dict[str, float]
+        LDAUL = {"Fe": 2,   "Co": 2}      # Dict[str, int]
+        LDAUJ = {"Fe": 0.0, "Co": 0.0}    # Dict[str, float]
+
+    ``to_pymatgen_format()`` performs this conversion.
+
+    DFT+U（Hubbard U）参数——前端暴露。
+
+    ``values`` 格式::
+
+        {"Fe": {"LDAUU": 4.0, "LDAUL": 2, "LDAUJ": 0.0},
+         "Co": {"LDAUU": 3.0, "LDAUL": 2, "LDAUJ": 0.0}}
+
+    pymatgen ``user_incar_settings`` 期望三个独立的字典::
+
+        LDAUU = {"Fe": 4.0, "Co": 3.0}   # Dict[str, float]
+        LDAUL = {"Fe": 2,   "Co": 2}      # Dict[str, int]
+        LDAUJ = {"Fe": 0.0, "Co": 0.0}    # Dict[str, float]
+
+    ``to_pymatgen_format()`` 执行此转换。
+    """
+    enabled: bool = False
+    values: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def to_pymatgen_format(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Convert the nested ``values`` dict to three separate pymatgen dicts.
+
+        Returns:
+            ``{"LDAUU": {...}, "LDAUL": {...}, "LDAUJ": {...}}``, or ``None``
+            when DFT+U is disabled or ``values`` is empty.
+
+        将嵌套的 ``values`` 字典转换为 pymatgen 期望的三个独立字典。
+
+        返回：
+            ``{"LDAUU": {...}, "LDAUL": {...}, "LDAUJ": {...}}``，
+            若 DFT+U 未启用或 ``values`` 为空则返回 ``None``。
+        """
+        if not self.enabled or not self.values:
+            return None
+        ldauu: Dict[str, float] = {}
+        ldaul: Dict[str, int]   = {}
+        ldauj: Dict[str, float] = {}
+        for elem, uda in self.values.items():
+            ldauu[elem] = float(uda.get("LDAUU", 0.0))
+            ldaul[elem] = int(uda.get("LDAUL", 0))
+            ldauj[elem] = float(uda.get("LDAUJ", 0.0))
+        return {"LDAUU": ldauu, "LDAUL": ldaul, "LDAUJ": ldauj}
+
+
+@dataclass
+class FrontendVdwParams:
+    """van der Waals dispersion correction parameters exposed to the frontend.
+
+    Attributes:
+        method: Dispersion correction method name, e.g. ``"None"``, ``"D3"``,
+            ``"D3BJ"``.  Resolved from ``FRONTEND_VDW_MAP`` in
+            ``FrontendAdapter.from_frontend_dict()``.
+
+    范德华色散校正参数——前端暴露。
+
+    属性：
+        method: 色散校正方法名称，如 ``"None"``、``"D3"``、``"D3BJ"``。
+            在 ``FrontendAdapter.from_frontend_dict()`` 中通过 ``FRONTEND_VDW_MAP``
+            解析。
+    """
+    method: str = "None"
+
+
+@dataclass
+class FrontendDipoleParams:
+    """Dipole correction parameters exposed to the frontend.
+
+    Attributes:
+        enabled:   Whether to enable dipole correction (LDIPOL = .TRUE.).
+        direction: Cartesian direction along which the correction is applied
+            (IDIPOL: 1=x, 2=y, 3=z).
+
+    偶极校正参数——前端暴露。
+
+    属性：
+        enabled:   是否启用偶极校正（LDIPOL = .TRUE.）。
+        direction: 施加校正的笛卡儿方向（IDIPOL：1=x，2=y，3=z）。
+    """
+    enabled: bool = True
+    direction: int = 3
+
+
+@dataclass
+class FrontendFrequencyParams:
+    """Vibrational frequency calculation parameters exposed to the frontend.
+
+    Attributes:
+        ibrion:             VASP IBRION tag (5 = finite differences, 7 = DFPT).
+        potim:              Finite-difference step size in Å (POTIM).
+        nfree:              Number of displacements per atom (NFREE).
+        vibrate_mode:       Atom-selection strategy: ``"inherit"`` uses
+            ``vibrate_indices``; other values are interpreted by the maker layer.
+        adsorbate_formula:  Chemical formula of the adsorbate for automatic
+            index selection.
+        adsorbate_prefer:   Preferred end of the structure to match when
+            resolving the adsorbate (``"tail"`` or ``"head"``).
+        vibrate_indices:    Explicit zero-based atom indices to displace.
+        calc_ir:            If ``True``, also compute the dielectric tensor
+            (sets LEPSILON and IBRION = 7).
+
+    频率计算参数——前端暴露。
+
+    属性：
+        ibrion:             VASP IBRION 标记（5 = 有限差分，7 = DFPT）。
+        potim:              有限差分步长（Å），对应 POTIM。
+        nfree:              每个原子的位移次数，对应 NFREE。
+        vibrate_mode:       原子选择策略：``"inherit"`` 使用 ``vibrate_indices``；
+            其他值由 maker 层解释。
+        adsorbate_formula:  用于自动选取原子索引的吸附质化学式。
+        adsorbate_prefer:   解析吸附质时优先匹配结构的哪一端（``"tail"`` 或 ``"head"``）。
+        vibrate_indices:    显式指定的零索引原子下标列表（用于位移计算）。
+        calc_ir:            若为 ``True``，同时计算介电张量（设置 LEPSILON 和
+            IBRION = 7）。
+    """
+    ibrion: int = 5
+    potim: float = 0.015
+    nfree: int = 2
+    vibrate_mode: str = "inherit"
+    adsorbate_formula: Optional[str] = None
+    adsorbate_prefer: str = "tail"
+    vibrate_indices: Optional[List[int]] = None
+    calc_ir: bool = False
+
+
+@dataclass
+class FrontendLobsterParams:
+    """LOBSTER chemical-bonding analysis parameters exposed to the frontend.
+
+    Attributes:
+        lobsterin_mode:         Template mode: ``"template"`` (auto-generate) or
+            ``"custom"`` (use ``custom_lobsterin``).
+        custom_lobsterin:       Full lobsterin content string when
+            ``lobsterin_mode="custom"``.
+        start_energy:           Lower bound of the energy window (eV).
+        end_energy:             Upper bound of the energy window (eV).
+        cohp_generator:         COHP bond-length range string passed to lobsterin.
+        overwritedict:          Key–value pairs that overwrite the generated
+            lobsterin dict before writing.
+        custom_lobsterin_lines: Verbatim lines appended to the lobsterin file.
+
+    LOBSTER 化学键分析参数——前端暴露。
+
+    属性：
+        lobsterin_mode:         模板模式：``"template"``（自动生成）或
+            ``"custom"``（使用 ``custom_lobsterin``）。
+        custom_lobsterin:       当 ``lobsterin_mode="custom"`` 时使用的完整
+            lobsterin 内容字符串。
+        start_energy:           能量窗口下界（eV）。
+        end_energy:             能量窗口上界（eV）。
+        cohp_generator:         传递给 lobsterin 的 COHP 键长范围字符串。
+        overwritedict:          写入前覆盖生成的 lobsterin 字典的键值对。
+        custom_lobsterin_lines: 逐字追加到 lobsterin 文件末尾的行列表。
+    """
+    lobsterin_mode: str = "template"
+    custom_lobsterin: Optional[str] = None
+    start_energy: float = -20.0
+    end_energy: float = 20.0
+    cohp_generator: str = "from 1.2 to 1.9 orbitalwise"
+    overwritedict: Optional[Dict[str, Any]] = None
+    custom_lobsterin_lines: Optional[List[str]] = None
+
+
+@dataclass
+class FrontendNBOParams:
+    """Natural Bond Orbital (NBO) analysis parameters exposed to the frontend.
+
+    Attributes:
+        basis_source:      Basis set identifier (``"ANO-RCC-MB"`` or
+            ``"custom"``).
+        custom_basis_path: Path to a custom basis set file when
+            ``basis_source="custom"``.
+        occ_1c:            One-centre occupancy threshold for bond detection.
+        occ_2c:            Two-centre occupancy threshold for bond detection.
+        print_cube:        Whether to write cube files (``"T"`` / ``"F"``).
+        density:           Whether to write density cube (``"T"`` / ``"F"``).
+        vis_start:         First orbital index for cube visualisation.
+        vis_end:           Last orbital index (``-1`` = last orbital).
+        mesh:              Cube-file grid dimensions ``[nx, ny, nz]``.
+        box_int:           Integer box extension factors ``[bx, by, bz]``.
+        origin_fact:       Fractional origin offset factor.
+
+    自然键轨道（NBO）分析参数——前端暴露。
+
+    属性：
+        basis_source:      基组标识符（``"ANO-RCC-MB"`` 或 ``"custom"``）。
+        custom_basis_path: 当 ``basis_source="custom"`` 时指向自定义基组文件的路径。
+        occ_1c:            单中心占据阈值，用于键的判定。
+        occ_2c:            双中心占据阈值，用于键的判定。
+        print_cube:        是否输出 cube 文件（``"T"`` / ``"F"``）。
+        density:           是否输出密度 cube 文件（``"T"`` / ``"F"``）。
+        vis_start:         cube 可视化的起始轨道索引。
+        vis_end:           终止轨道索引（``-1`` 表示最后一个轨道）。
+        mesh:              cube 文件网格维度 ``[nx, ny, nz]``。
+        box_int:           整数盒子扩展因子 ``[bx, by, bz]``。
+        origin_fact:       分数原点偏移因子。
+    """
+    basis_source: str = "ANO-RCC-MB"
+    custom_basis_path: Optional[str] = None
+    occ_1c: float = 1.60
+    occ_2c: float = 1.85
+    print_cube: str = "F"
+    density: str = "F"
+    vis_start: int = 0
+    vis_end: int = -1
+    mesh: List[int] = field(default_factory=lambda: [0, 0, 0])
+    box_int: List[int] = field(default_factory=lambda: [1, 1, 1])
+    origin_fact: float = 0.00
+
+
+@dataclass
+class FrontendMDParams:
+    """Molecular dynamics parameters exposed to the frontend.
+
+    Attributes:
+        ensemble:        Statistical ensemble — ``"nvt"`` (constant N, V, T)
+            or ``"npt"`` (constant N, p, T).
+        start_temp:      Starting temperature in K (TEBEG).
+        end_temp:        Ending temperature in K (TEEND); equal to
+            ``start_temp`` for isothermal runs.
+        nsteps:          Total number of MD steps (NSW).
+        time_step:       Ionic time step in fs (POTIM); ``None`` uses the
+            InputSet default.
+        langevin_gamma:  Per-element Langevin friction coefficients (ps⁻¹),
+            passed as ``{"Fe": 10.0, …}`` when using the Langevin thermostat.
+
+    分子动力学参数——前端暴露。
+
+    属性：
+        ensemble:        统计系综——``"nvt"``（恒定 N、V、T）或
+            ``"npt"``（恒定 N、p、T）。
+        start_temp:      起始温度（K），对应 TEBEG。
+        end_temp:        终止温度（K），对应 TEEND；等温模拟时与 ``start_temp`` 相同。
+        nsteps:          MD 总步数，对应 NSW。
+        time_step:       离子时间步长（fs），对应 POTIM；``None`` 使用 InputSet 默认值。
+        langevin_gamma:  各元素的 Langevin 摩擦系数（ps⁻¹），使用 Langevin
+            恒温器时以 ``{"Fe": 10.0, …}`` 形式传入。
+    """
+    ensemble: str = "nvt"
+    start_temp: float = 300.0
+    end_temp: float = 300.0
+    nsteps: int = 1000
+    time_step: Optional[float] = None
+    langevin_gamma: Optional[Dict[str, float]] = None
+
+
+@dataclass
+class FrontendNEBParams:
+    """Nudged Elastic Band (NEB) transition-state search parameters exposed to
+    the frontend.
+
+    Attributes:
+        n_images:  Number of intermediate images between endpoints.
+        use_idpp:  If ``True``, initialise the path with the Image Dependent
+            Pair Potential (IDPP) interpolation instead of linear interpolation.
+
+    微动弹性带（NEB）过渡态搜索参数——前端暴露。
+
+    属性：
+        n_images:  端点之间的中间像数量。
+        use_idpp:  若为 ``True``，使用图像依赖对势（IDPP）内插初始化路径，
+            而非线性内插。
+    """
+    n_images: int = 6
+    use_idpp: bool = True
+
+
+@dataclass
+class FrontendResourceParams:
+    """Compute resource allocation parameters exposed to the frontend.
+
+    Attributes:
+        runtime: Wall-clock time limit in hours.
+        cores:   Number of MPI ranks (CPU cores) to request.
+        queue:   Scheduler queue / partition name.
+
+    计算资源配置——前端暴露。
+
+    属性：
+        runtime: 计算时间上限（小时）。
+        cores:   请求的 MPI 进程数（CPU 核心数）。
+        queue:   调度器队列/分区名称。
+    """
+    runtime: int = 72
+    cores: int = 72
+    queue: str = "low"
+
+
+# ============================================================================
+# 统一API参数类
+# ============================================================================
+
+@dataclass
+class VaspWorkflowParams:
+    """Unified VASP workflow parameters — the complete frontend-supplied configuration.
+
+    This dataclass is the canonical intermediate representation between the raw
+    frontend dict and the engine's ``WorkflowConfig``.  All frontend parameter
+    groups are collected here as typed sub-objects; ``to_workflow_config()``
+    converts them to the engine format.
+
+    Core attributes:
+        calc_type:       Frontend calculation type string (resolved to
+            ``CalcType`` by ``to_workflow_config()``).
+        structure:       Input structure — file path, pymatgen ``Structure``,
+            or ``FrontendStructureInput``.
+
+    Optional sub-module attributes:
+        precision, kpoints, magmom, dft_u, vdw, dipole, frequency,
+        lobster, nbo, md, neb — each holds a typed params dataclass or ``None``.
+
+    统一的 VASP 工作流参数——前端传入的完整配置。
+
+    本数据类是原始前端字典与引擎 ``WorkflowConfig`` 之间的规范中间表示。
+    所有前端参数组以类型化子对象形式汇聚于此；``to_workflow_config()`` 负责将其
+    转换为引擎格式。
+
+    核心属性：
+        calc_type:  前端计算类型字符串（由 ``to_workflow_config()`` 解析为
+            ``CalcType``）。
+        structure:  输入结构——文件路径、pymatgen ``Structure`` 对象或
+            ``FrontendStructureInput``。
+
+    可选子模块属性：
+        precision、kpoints、magmom、dft_u、vdw、dipole、frequency、
+        lobster、nbo、md、neb——每项持有一个类型化参数数据类或 ``None``。
+    """
+
+    # === 核心参数 ===
+    calc_type: str
+    structure: Union[str, Path, Structure, FrontendStructureInput]
+
+    # === 功能参数 ===
+    functional: str = "PBE"
+    kpoints_density: float = 50.0
+
+    # === 可选参数 ===
+    prev_dir: Optional[Union[str, Path]] = None
+    output_dir: Optional[Union[str, Path]] = None
+
+    # === 子模块参数 ===
+    precision: Optional[FrontendPrecisionParams] = None
+    kpoints: Optional[FrontendKpointParams] = None
+    magmom: Optional[FrontendMagmomParams] = None
+    dft_u: Optional[FrontendDFTPlusUParams] = None
+    vdw: Optional[FrontendVdwParams] = None
+    dipole: Optional[FrontendDipoleParams] = None
+    frequency: Optional[FrontendFrequencyParams] = None
+    lobster: Optional[FrontendLobsterParams] = None
+    nbo: Optional[FrontendNBOParams] = None
+    md: Optional[FrontendMDParams] = None
+    neb: Optional[FrontendNEBParams] = None
+
+    # === 资源配置 ===
+    resources: Optional[FrontendResourceParams] = None
+
+    # === 自定义INCAR ===
+    custom_incar: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        # Normalise functional to uppercase and supply default sub-objects.
+        # 将泛函规范化为大写，并提供默认子对象。
+        self.functional = self.functional.upper()
+        if self.precision is None:
+            self.precision = FrontendPrecisionParams()
+        if self.kpoints is None:
+            self.kpoints = FrontendKpointParams()
+        if self.resources is None:
+            self.resources = FrontendResourceParams()
+
+    def to_workflow_config(self) -> WorkflowConfig:
+        """Convert this adapter object to the engine's ``WorkflowConfig``.
+
+        Mapping rules:
+        - ``calc_type`` string → ``CalcType`` enum via ``calc_type_map``
+        - ``custom_incar`` + precision overrides → ``user_incar_overrides``
+        - Sub-module params (frequency, lobster, NBO) set dedicated fields on
+          ``WorkflowConfig`` (e.g. ``vibrate_indices``, ``lobster_overwritedict``)
+
+        Extension: when you add a new ``FrontendXxxParams`` group, add a matching
+        ``if self.xxx: config.xxx_field = ...`` block at the end of this method,
+        and add the corresponding field to ``workflow_engine.WorkflowConfig``.
+
+        将本适配器对象转换为引擎所需的 ``WorkflowConfig``。
+
+        映射规则：
+        - ``calc_type`` 字符串通过 ``calc_type_map`` 映射为 ``CalcType`` 枚举值。
+        - ``custom_incar`` + 精度覆盖参数合并为 ``user_incar_overrides``。
+        - 子模块参数（frequency、lobster、NBO）设置 ``WorkflowConfig`` 的专用字段
+          （如 ``vibrate_indices``、``lobster_overwritedict``）。
+
+        扩展：新增 ``FrontendXxxParams`` 参数组时，在本方法末尾添加对应的
+        ``if self.xxx: config.xxx_field = ...`` 代码块，并在
+        ``workflow_engine.WorkflowConfig`` 中添加相应字段。
+        """
+
+        calc_type_map = {
+            "bulk_relax":    CalcType.BULK_RELAX,
+            "slab_relax":    CalcType.SLAB_RELAX,
+            "static_sp":     CalcType.STATIC_SP,
+            "static_dos":    CalcType.DOS_SP,
+            "static_charge": CalcType.CHG_SP,
+            "static_elf":    CalcType.ELF_SP,
+            "neb":           CalcType.NEB,
+            "dimer":         CalcType.DIMER,
+            "freq":          CalcType.FREQ,
+            "freq_ir":       CalcType.FREQ_IR,
+            "lobster":       CalcType.LOBSTER,
+            "nmr_cs":        CalcType.NMR_CS,
+            "nmr_efg":       CalcType.NMR_EFG,
+            "nbo":           CalcType.NBO,
+            "md_nvt":        CalcType.MD_NVT,
+            "md_npt":        CalcType.MD_NPT,
+        }
+
+        backend_calc_type = calc_type_map.get(self.calc_type)
+        if backend_calc_type is None:
+            raise ValueError(f"未知的计算类型: {self.calc_type}")
+
+        # ── 构建 INCAR 覆盖参数 ────────────────────────────────────────────
+        # Build the INCAR override dict; later entries take higher priority.
+        # 构建 INCAR 覆盖字典；越靠后的条目优先级越高。
+        user_incar_overrides: Dict[str, Any] = {}
+        if self.custom_incar:
+            user_incar_overrides.update(self.custom_incar)
+
+        # precision
+        # Apply precision overrides when the field value is truthy (non-None, non-zero).
+        # 仅在字段值为真值（非 None、非零）时才写入精度覆盖。
+        if self.precision:
+            p = self.precision
+            if p.encut:  user_incar_overrides["ENCUT"]  = p.encut
+            if p.ediff:  user_incar_overrides["EDIFF"]  = p.ediff
+            if p.ediffg: user_incar_overrides["EDIFFG"] = p.ediffg
+            if p.nedos:  user_incar_overrides["NEDOS"]  = p.nedos
+
+        # frequency
+        # Only inject frequency tags when the calc type actually runs a frequency job.
+        # 仅在计算类型确实为频率计算时才注入频率相关 INCAR 标记。
+        if self.frequency and backend_calc_type in (CalcType.FREQ, CalcType.FREQ_IR):
+            f = self.frequency
+            user_incar_overrides.update({
+                "IBRION": f.ibrion,
+                "POTIM":  f.potim,
+                "NFREE":  f.nfree,
+            })
+            if f.calc_ir:
+                # IR calculation requires DFPT: switch IBRION to 7 and enable LEPSILON.
+                # IR 计算需要 DFPT：将 IBRION 切换为 7 并启用 LEPSILON。
+                user_incar_overrides["LEPSILON"] = True
+                user_incar_overrides["IBRION"]   = 7
+
+        # ── MAGMOM ────────────────────────────────────────────────────────
+        # pymatgen sets.py:577 期望 MAGMOM 是 List[float]（per-site）
+        # 或 Dict[str, float]（per-element，pymatgen 会按结构展开）
+        # pymatgen sets.py:577 expects MAGMOM as List[float] (per-site) or
+        # Dict[str, float] (per-element; pymatgen expands it against the structure).
+        if self.magmom and self.magmom.enabled:
+            if self.magmom.per_atom:
+                # 直接传 per-site 列表，pymatgen 原样写入 INCAR
+                # Pass per-site list directly; pymatgen writes it verbatim to INCAR.
+                user_incar_overrides["MAGMOM"] = [float(v) for v in self.magmom.per_atom]
+            elif self.magmom.per_element:
+                # 传 per-element dict，pymatgen 按结构中各元素出现顺序展开
+                # Pass per-element dict; pymatgen expands by element order in the structure.
+                user_incar_overrides["MAGMOM"] = {
+                    k: float(v) for k, v in self.magmom.per_element.items()
+                }
+
+        # dipole
+        if self.dipole and self.dipole.enabled:
+            user_incar_overrides.update({
+                "IDIPOL": self.dipole.direction,
+                "LDIPOL": True,
+            })
+
+        # ── DFT+U ─────────────────────────────────────────────────────────
+        # pymatgen sets.py:613 期望 LDAUU/LDAUL/LDAUJ 是 Dict[str, float/int]
+        # 例：{"Fe": 4.0, "Co": 3.0}，而不是字符串或列表
+        # pymatgen sets.py:613 expects LDAUU/LDAUL/LDAUJ as Dict[str, float/int],
+        # e.g. {"Fe": 4.0, "Co": 3.0} — NOT a string or list.
+        if self.dft_u and self.dft_u.enabled:
+            dft_u_fmt = self.dft_u.to_pymatgen_format()
+            if dft_u_fmt:
+                user_incar_overrides["LDAUU"] = dft_u_fmt["LDAUU"]
+                user_incar_overrides["LDAUL"] = dft_u_fmt["LDAUL"]
+                user_incar_overrides["LDAUJ"] = dft_u_fmt["LDAUJ"]
+                user_incar_overrides["LDAU"]  = True
+
+        # MD
+        if self.md and backend_calc_type in (CalcType.MD_NVT, CalcType.MD_NPT):
+            user_incar_overrides.update({
+                "TEBEG": self.md.start_temp,
+                "TEEND": self.md.end_temp,
+                "NSW":   self.md.nsteps,
+            })
+            if self.md.time_step:
+                user_incar_overrides["POTIM"] = self.md.time_step
+
+        # ── 构建 WorkflowConfig ───────────────────────────────────────────
+        # Construct the engine config with the merged INCAR overrides.
+        # 使用合并后的 INCAR 覆盖参数构建引擎配置。
+        config = WorkflowConfig(
+            calc_type=backend_calc_type,
+            structure=self.structure,
+            functional=self.functional,
+            kpoints_density=self.kpoints_density,
+            output_dir=self.output_dir,
+            prev_dir=self.prev_dir,
+            user_incar_overrides=user_incar_overrides,
+        )
+
+        if self.md:
+            config.ensemble   = self.md.ensemble
+            config.start_temp = self.md.start_temp
+            config.end_temp   = self.md.end_temp
+            config.nsteps     = self.md.nsteps
+            config.time_step  = self.md.time_step
+
+        if self.neb:
+            config.n_images  = self.neb.n_images
+            config.use_idpp  = self.neb.use_idpp
+
+        if self.frequency:
+            config.vibrate_indices = self.frequency.vibrate_indices
+            config.calc_ir         = self.frequency.calc_ir
+
+        if self.lobster:
+            config.lobster_overwritedict   = self.lobster.overwritedict
+            config.lobster_custom_lines    = self.lobster.custom_lobsterin_lines
+
+        return config
+
+    def get_script_context(self) -> Dict[str, Any]:
+        """Build the template rendering context required by the script generator.
+
+        Returns:
+            Dict with keys ``functional``, ``calc_category``, ``cores``,
+            ``walltime``, ``queue``, and optionally ``need_vdw``.
+
+        构建脚本生成器所需的模板渲染上下文。
+
+        返回：
+            包含 ``functional``、``calc_category``、``cores``、``walltime``、
+            ``queue`` 以及可选 ``need_vdw`` 键的字典。
+        """
+        # Map frontend calc_type strings to CalcCategory for PBS/SLURM template selection.
+        # 将前端 calc_type 字符串映射为 CalcCategory，用于 PBS/SLURM 模板选择。
+        calc_type_to_category = {
+            "bulk_relax":    CalcCategory.RELAX,
+            "slab_relax":    CalcCategory.RELAX,
+            "static_sp":     CalcCategory.STATIC,
+            "static_dos":    CalcCategory.STATIC,
+            "static_charge": CalcCategory.STATIC,
+            "static_elf":    CalcCategory.STATIC,
+            "neb":           CalcCategory.NEB,
+            "dimer":         CalcCategory.DIMER,
+            "freq":          CalcCategory.FREQ,
+            "freq_ir":       CalcCategory.FREQ,
+            "lobster":       CalcCategory.LOBSTER,
+            "nmr_cs":        CalcCategory.NMR,
+            "nmr_efg":       CalcCategory.NMR,
+            "nbo":           CalcCategory.NBO,
+            "md_nvt":        CalcCategory.MD,
+            "md_npt":        CalcCategory.MD,
+        }
+        calc_category = calc_type_to_category.get(self.calc_type, CalcCategory.STATIC)
+
+        res = self.resources
+        context: Dict[str, Any] = {
+            "functional":    self.functional,
+            "calc_category": calc_category,
+            "cores":         res.cores   if res else None,
+            "walltime":      res.runtime if res else None,
+            "queue":         res.queue   if res else None,
+        }
+        # Flag the context when a vdw_kernel.bindat file is needed at runtime.
+        # 当运行时需要 vdw_kernel.bindat 文件时标记上下文。
+        if self.vdw and self.vdw.method != "None":
+            context["need_vdw"] = True
+        return context
+
+
+# ============================================================================
+# API 类
+# ============================================================================
+
+class VaspAPI:
+    """Unified VASP workflow API.
+
+    Wraps ``WorkflowEngine`` and ``Script`` to provide a single entry point
+    for executing a complete VASP workflow (input generation + job script
+    creation) from a ``VaspWorkflowParams`` object.
+
+    VASP 工作流统一 API。
+
+    封装 ``WorkflowEngine`` 与 ``Script``，提供单一入口点，用于从
+    ``VaspWorkflowParams`` 对象执行完整的 VASP 工作流（输入文件生成 + 作业
+    脚本创建）。
+    """
+
+    def __init__(
+        self,
+        engine: Optional[WorkflowEngine] = None,
+        script_maker: Optional[Script] = None,
+    ):
+        self.engine = engine or WorkflowEngine()
+        self.script_maker = script_maker or Script()
+
+    def run_workflow(
+        self,
+        params: VaspWorkflowParams,
+        generate_script: bool = True,
+    ) -> Dict[str, Any]:
+        """Execute a full VASP workflow from a ``VaspWorkflowParams`` object.
+
+        Steps:
+        1. Convert *params* to ``WorkflowConfig`` and validate.
+        2. Call ``WorkflowEngine.run()`` to write VASP input files.
+        3. Optionally generate a PBS/SLURM job script.
+
+        Args:
+            params:          Typed workflow parameters.
+            generate_script: If ``True``, also write a job submission script.
+
+        Returns:
+            Dict with keys ``success``, ``output_dir``, ``calc_type``, and
+            optionally ``script_paths``.
+
+        Raises:
+            ValueError: if ``config.validate()`` returns any errors.
+
+        从 ``VaspWorkflowParams`` 对象执行完整的 VASP 工作流。
+
+        步骤：
+        1. 将 *params* 转换为 ``WorkflowConfig`` 并验证。
+        2. 调用 ``WorkflowEngine.run()`` 写出 VASP 输入文件。
+        3. 可选地生成 PBS/SLURM 作业脚本。
+
+        参数：
+            params:          类型化工作流参数。
+            generate_script: 若为 ``True``，同时写出作业提交脚本。
+
+        返回：
+            包含 ``success``、``output_dir``、``calc_type`` 以及可选
+            ``script_paths`` 键的字典。
+
+        抛出：
+            ValueError: 若 ``config.validate()`` 返回任何错误。
+        """
+        logger.info(f"开始执行工作流: calc_type={params.calc_type}")
+
+        config = params.to_workflow_config()
+        errors = config.validate()
+        if errors:
+            raise ValueError("配置验证失败:\n" + "\n".join(f"  - {e}" for e in errors))
+
+        output_dir = self.engine.run(config)
+        result = {
+            "success":    True,
+            "output_dir": output_dir,
+            "calc_type":  params.calc_type,
+        }
+
+        if generate_script:
+            script_paths = self.engine.generate_script(
+                config=config,
+                **params.get_script_context()
+            )
+            result["script_paths"] = script_paths
+
+        logger.info(f"工作流执行完成: {output_dir}")
+        return result
+
+    def validate_params(self, params: VaspWorkflowParams) -> List[str]:
+        """Validate a ``VaspWorkflowParams`` object without executing the workflow.
+
+        Checks: calc_type membership, structure path existence, functional name,
+        k-point density sign, prev_dir existence + CONTCAR presence, NEB params,
+        MD params.
+
+        Args:
+            params: Workflow parameters to validate.
+
+        Returns:
+            List of human-readable error strings (empty if valid).
+
+        在不执行工作流的情况下验证 ``VaspWorkflowParams`` 对象。
+
+        检查项：calc_type 合法性、结构路径存在性、泛函名称、K 点密度正负、
+        prev_dir 存在性及 CONTCAR 存在性、NEB 参数、MD 参数。
+
+        参数：
+            params: 待验证的工作流参数。
+
+        返回：
+            人类可读的错误字符串列表（无错误时为空列表）。
+        """
+        errors = []
+        valid_calc_types = [
+            "bulk_relax", "slab_relax",
+            "static_sp", "static_dos", "static_charge", "static_elf",
+            "neb", "dimer", "freq", "freq_ir",
+            "lobster", "nmr_cs", "nmr_efg", "nbo",
+            "md_nvt", "md_npt",
+        ]
+        if params.calc_type not in valid_calc_types:
+            errors.append(f"不支持的计算类型: {params.calc_type}")
+
+        if isinstance(params.structure, str):
+            if not Path(params.structure).exists() and params.structure.strip():
+                if len(params.structure) < 10:
+                    errors.append("结构输入无效")
+        elif isinstance(params.structure, Path):
+            if not params.structure.exists():
+                errors.append(f"结构文件不存在: {params.structure}")
+
+        valid_functionals = ["PBE", "RPBE", "BEEF", "BEEFVTST", "SCAN", "HSE", "LDA"]
+        if params.functional not in valid_functionals:
+            logger.warning(f"未识别的泛函: {params.functional}，将尝试使用默认设置")
+
+        if params.kpoints_density <= 0:
+            errors.append("K点密度必须大于0")
+
+        if params.prev_dir:
+            prev_path = Path(params.prev_dir)
+            if not prev_path.exists():
+                errors.append(f"前序目录不存在: {params.prev_dir}")
+            elif not (prev_path / "CONTCAR").exists():
+                errors.append(f"前序目录中缺少 CONTCAR: {params.prev_dir}")
+
+        if params.calc_type == "neb" and not params.neb:
+            errors.append("NEB计算需要提供neb参数")
+
+        if params.calc_type in ("md_nvt", "md_npt") and params.md:
+            if params.md.nsteps <= 0:
+                errors.append("MD步数必须大于0")
+            if params.md.start_temp <= 0:
+                errors.append("温度必须大于0")
+
+        return errors
+
+    @staticmethod
+    def from_json(json_str: str) -> VaspWorkflowParams:
+        """Deserialise a JSON string to ``VaspWorkflowParams``.
+
+        Delegates to ``from_dict`` after parsing.
+
+        Args:
+            json_str: JSON-encoded workflow parameter dict.
+
+        Returns:
+            Parsed ``VaspWorkflowParams`` instance.
+
+        将 JSON 字符串反序列化为 ``VaspWorkflowParams``。
+
+        解析后委托给 ``from_dict``。
+
+        参数：
+            json_str: JSON 编码的工作流参数字典。
+
+        返回：
+            解析后的 ``VaspWorkflowParams`` 实例。
+        """
+        import json
+        data = json.loads(json_str)
+        return VaspAPI.from_dict(data)
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> VaspWorkflowParams:
+        """Build a ``VaspWorkflowParams`` from a plain dict.
+
+        If *data* contains ``"type"`` and ``"settings"`` keys it is treated as
+        a frontend dict and forwarded to ``FrontendAdapter.from_frontend_dict``.
+        Otherwise the direct-mapping path is used.
+
+        Args:
+            data: Workflow parameter dict (direct or frontend format).
+
+        Returns:
+            Constructed ``VaspWorkflowParams`` instance.
+
+        从普通字典构建 ``VaspWorkflowParams``。
+
+        若 *data* 包含 ``"type"`` 和 ``"settings"`` 键，则视为前端格式，
+        转发给 ``FrontendAdapter.from_frontend_dict`` 处理；否则使用直接映射路径。
+
+        参数：
+            data: 工作流参数字典（直接格式或前端格式）。
+
+        返回：
+            构建的 ``VaspWorkflowParams`` 实例。
+        """
+        if "type" in data and "settings" in data:
+            return FrontendAdapter.from_frontend_dict(data)
+
+        precision = None
+        if "precision" in data and data["precision"]:
+            p = data["precision"]
+            precision = FrontendPrecisionParams(
+                encut=p.get("encut"), ediff=p.get("ediff"),
+                ediffg=p.get("ediffg"), nedos=p.get("nedos"),
+            )
+
+        kpoints = None
+        if "kpoints" in data and data["kpoints"]:
+            k = data["kpoints"]
+            kpoints = FrontendKpointParams(
+                density=k.get("density"),
+                gamma_centered=k.get("gammaCentered", True),
+            )
+
+        resources = None
+        if "resource" in data and data["resource"]:
+            r = data["resource"]
+            # Strip a trailing "h" or "H" from runtime strings like "72h".
+            # 从 "72h" 等格式中去除尾部的 "h" 或 "H"。
+            runtime_str = str(r.get("runtime", "72"))
+            runtime = int(runtime_str.rstrip("hH"))
+            resources = FrontendResourceParams(runtime=runtime, cores=r.get("cores", 72))
+
+        structure_input = None
+        if "structure" in data and isinstance(data["structure"], dict):
+            s = data["structure"]
+            structure_input = FrontendStructureInput(
+                source=s.get("source", "file"),
+                id=s.get("id", ""),
+                content=s.get("content", ""),
+            )
+
+        md = None
+        if "md" in data and data["md"]:
+            m = data["md"]
+            md = FrontendMDParams(
+                ensemble=m.get("ensemble", "nvt"),
+                start_temp=m.get("TEBEG", 300),
+                end_temp=m.get("TEEND", 300),
+                nsteps=m.get("NSW", 1000),
+                time_step=m.get("POTIM"),
+            )
+
+        frequency = None
+        if "frequency" in data and data["frequency"]:
+            f = data["frequency"]
+            frequency = FrontendFrequencyParams(
+                ibrion=f.get("IBRION", 5),
+                potim=f.get("POTIM", 0.015),
+                nfree=f.get("NFREE", 2),
+                vibrate_mode=f.get("vibrate_mode", "inherit"),
+                adsorbate_formula=f.get("adsorbate_formula"),
+                calc_ir=f.get("calc_ir", False),
+            )
+
+        prev_dir = None
+        if "prev_dir" in data and data["prev_dir"]:
+            prev_dir = data["prev_dir"]
+        elif "from_prev_calc" in data and data["from_prev_calc"]:
+            prev_dir = data["from_prev_calc"]
+
+        custom_incar = data.get("custom_incar") or None
+
+        return VaspWorkflowParams(
+            calc_type=data.get("calc_type", "static_sp"),
+            structure=data.get("structure", data.get("structure_id", "")),
+            functional=data.get("functional", data.get("xc", "PBE")),
+            kpoints_density=data.get("kpoints_density", data.get("kpoints", {}).get("density", 50)),
+            prev_dir=prev_dir,
+            output_dir=data.get("output_dir"),
+            precision=precision,
+            kpoints=kpoints,
+            resources=resources,
+            md=md,
+            frequency=frequency,
+            custom_incar=custom_incar,
+        )
+
+
+# ============================================================================
+# 前端兼容层
+# ============================================================================
+
+# Map frontend string names → backend calc_type strings used by WorkflowEngine.
+# Add an entry here whenever a new CalcType is registered in workflow_engine.py.
+# 将前端字符串名称映射到 WorkflowEngine 使用的后端 calc_type 字符串。
+# 每当在 workflow_engine.py 中注册新的 CalcType 时，在此处添加对应条目。
+FRONTEND_CALC_TYPE_MAP = {
+    "dos":           "static_dos",
+    "lobster":       "lobster",
+    "freq":          "freq",
+    "nbo":           "nbo",
+    "bulk_relax":    "bulk_relax",
+    "slab_relax":    "slab_relax",
+    "relax":         "slab_relax",
+    "static_sp":     "static_sp",
+    "static_charge": "static_charge",
+    "static_elf":    "static_elf",
+    "neb":           "neb",
+    "dimer":         "dimer",
+    "md_nvt":        "md_nvt",
+    "md_npt":        "md_npt",
+    "nmr_cs":        "nmr_cs",
+    "nmr_efg":       "nmr_efg",
+}
+
+# Reverse mapping: backend calc_type string → first matching frontend name.
+# 反向映射：后端 calc_type 字符串 → 第一个匹配的前端名称。
+BACKEND_TO_FRONTEND_CALC_TYPE = {v: k for k, v in FRONTEND_CALC_TYPE_MAP.items()}
+
+# Map frontend XC functional aliases to canonical pymatgen functional names.
+# 将前端 XC 泛函别名映射为 pymatgen 规范泛函名称。
+FRONTEND_XC_MAP = {
+    "PBE": "PBE", "RPBE": "RPBE", "BEEF": "BEEF",
+    "SCAN": "SCAN", "HSE": "HSE", "LDA": "LDA", "PBEsol": "PBEsol",
+}
+
+# Map frontend vdW method strings to canonical method identifiers.
+# 将前端 vdW 方法字符串映射为规范方法标识符。
+FRONTEND_VDW_MAP = {
+    "None": "None", "D3": "D3", "D3BJ": "D3BJ",
+    "DFT-D2": "DFT-D2", "DFT-D3": "D3",
+}
+
+
+class FrontendAdapter:
+    """Convert a plain frontend dict into a fully typed ``VaspWorkflowParams``.
+
+    This is the sole public entry point used by ``BaseStage._write_vasp_inputs()``.
+    It normalises string calc-type names, resolves XC functional aliases, and
+    unpacks every sub-module parameter group (precision, lobster, NBO, frequency,
+    MAGMOM, DFT+U, …) from the flat ``settings`` dict.
+
+    To add a new frontend parameter:
+      1. Add the key to ``known_keys`` inside ``from_frontend_dict`` so it is
+         excluded from ``custom_incar``.
+      2. Build the matching ``FrontendXxxParams`` object and attach it to the
+         returned ``VaspWorkflowParams``.
+      3. Transfer it to ``WorkflowConfig`` in ``to_workflow_config()``.
+
+    将普通前端字典转换为完全类型化的 ``VaspWorkflowParams``。
+
+    这是 ``BaseStage._write_vasp_inputs()`` 唯一使用的公共入口点。
+    它规范化 calc_type 字符串名称，解析 XC 泛函别名，并从扁平的 ``settings``
+    字典中解包每个子模块参数组（precision、lobster、NBO、frequency、MAGMOM、
+    DFT+U 等）。
+
+    新增前端参数的步骤：
+      1. 在 ``from_frontend_dict`` 内的 ``known_keys`` 中添加该键，使其不进入
+         ``custom_incar``。
+      2. 构建对应的 ``FrontendXxxParams`` 对象并附加到返回的
+         ``VaspWorkflowParams`` 上。
+      3. 在 ``to_workflow_config()`` 中将其传递给 ``WorkflowConfig``。
+    """
+
+    @staticmethod
+    def from_frontend_json(json_str: str) -> VaspWorkflowParams:
+        """Parse a JSON string and delegate to ``from_frontend_dict``.
+
+        Args:
+            json_str: JSON-encoded frontend parameter dict.
+
+        Returns:
+            Constructed ``VaspWorkflowParams`` instance.
+
+        解析 JSON 字符串并委托给 ``from_frontend_dict``。
+
+        参数：
+            json_str: JSON 编码的前端参数字典。
+
+        返回：
+            构建的 ``VaspWorkflowParams`` 实例。
+        """
+        import json
+        return FrontendAdapter.from_frontend_dict(json.loads(json_str))
+
+    @staticmethod
+    def from_frontend_dict(data: Dict[str, Any]) -> VaspWorkflowParams:
+        """Build a ``VaspWorkflowParams`` from a flat frontend dict.
+
+        Expected keys in *data*:
+            calc_type   – string name, resolved via ``FRONTEND_CALC_TYPE_MAP``
+            xc / functional – functional alias, resolved via ``FRONTEND_XC_MAP``
+            kpoints     – ``{"density": float}``
+            settings    – flat INCAR + sub-module params (NEDOS, IBRION, lobsterin_mode, …)
+            structure   – ``{"source": "file", "id": "<path>"}``
+            prev_dir    – predecessor calculation directory
+            lobsterin   – ``Dict[str, Any]`` written to lobsterin (overwritedict)
+            lobsterin_custom_lines – ``List[str]`` appended verbatim to lobsterin
+
+        从扁平的前端字典构建 ``VaspWorkflowParams``。
+
+        *data* 中的预期键：
+            calc_type              — 字符串名称，通过 ``FRONTEND_CALC_TYPE_MAP`` 解析
+            xc / functional        — 泛函别名，通过 ``FRONTEND_XC_MAP`` 解析
+            kpoints                — ``{"density": float}``
+            settings               — 扁平 INCAR + 子模块参数（NEDOS、IBRION、
+                                     lobsterin_mode 等）
+            structure              — ``{"source": "file", "id": "<path>"}``
+            prev_dir               — 前序计算目录
+            lobsterin              — ``Dict[str, Any]``，写入 lobsterin（overwritedict）
+            lobsterin_custom_lines — ``List[str]``，逐字追加到 lobsterin
+        """
+        # 1. calc_type
+        # Resolve frontend calc_type alias to the backend string used by WorkflowEngine.
+        # 将前端 calc_type 别名解析为 WorkflowEngine 使用的后端字符串。
+        frontend_calc_type = data.get("calc_type", "dos")
+        backend_calc_type = FRONTEND_CALC_TYPE_MAP.get(frontend_calc_type, frontend_calc_type)
+
+        # 2. 结构
+        # Parse the structure descriptor into a FrontendStructureInput.
+        # 将结构描述符解析为 FrontendStructureInput。
+        struct_data = data.get("structure", {})
+        if isinstance(struct_data, dict):
+            structure = FrontendStructureInput(
+                source=struct_data.get("source", "file"),
+                id=struct_data.get("id", ""),
+                content=struct_data.get("content", ""),
+            )
+        else:
+            # Non-dict values (e.g. raw path string) are passed through unchanged.
+            # 非字典值（如原始路径字符串）直接透传。
+            structure = struct_data
+
+        # 3. 泛函
+        # Resolve XC alias; fall back to uppercasing the raw string.
+        # 解析 XC 别名；若无匹配则将原始字符串转为大写。
+        xc = data.get("xc", data.get("functional", "PBE"))
+        functional = FRONTEND_XC_MAP.get(xc, xc.upper())
+
+        # 4. settings
+        settings = data.get("settings", {})
+
+        # 4.1 精度参数
+        precision = FrontendPrecisionParams(
+            nedos=_parse_int(settings.get("NEDOS")),
+            encut=_parse_int(settings.get("ENCUT")),
+            ediff=_parse_float(settings.get("EDIFF")),
+            ediffg=_parse_float(settings.get("EDIFFG")),
+        )
+
+        # 4.2 自定义 INCAR（非标准字段）
+        # Collect all settings keys not in known_keys as raw INCAR overrides.
+        # 将所有不在 known_keys 中的 settings 键收集为原始 INCAR 覆盖。
+        custom_incar: Dict[str, Any] = {}
+        known_keys = {
+            "NEDOS", "ENCUT", "EDIFF", "EDIFFG",
+            "ISMEAR", "SIGMA", "IBRION", "POTIM", "NFREE",
+            "from_prev_calc", "lobsterin_mode", "calc_ir",
+            "vibrate_mode", "adsorbate_formula", "adsorbate_formula_prefer",
+            "vibrate_indices", "basis_source", "nbo_config",
+            # MAGMOM / DFT+U 单独处理，不进 custom_incar
+            # MAGMOM / DFT+U are handled separately and excluded from custom_incar.
+            "MAGMOM", "LDAUU", "LDAUL", "LDAUJ",
+        }
+        for key, value in settings.items():
+            if key not in known_keys and value not in (None, "", "—"):
+                try:
+                    # Attempt numeric parsing; fall back to raw string on failure.
+                    # 尝试数值解析；失败时保留原始字符串。
+                    custom_incar[key] = _parse_number(value)
+                except (ValueError, TypeError):
+                    custom_incar[key] = value
+
+        # 4.3 ISMEAR / SIGMA
+        # Apply smearing parameters only when explicitly provided and non-empty.
+        # 仅在显式提供且非空时才应用展宽参数。
+        if "ISMEAR" in settings and settings["ISMEAR"] not in (None, "", "—"):
+            custom_incar["ISMEAR"] = _parse_int(settings["ISMEAR"])
+        if "SIGMA" in settings and settings["SIGMA"] not in (None, "", "—"):
+            custom_incar["SIGMA"] = _parse_float(settings["SIGMA"])
+
+        # 5. kpoints
+        kpt_data = data.get("kpoints", {})
+        if isinstance(kpt_data, dict):
+            kpoints = FrontendKpointParams(
+                density=_parse_float(kpt_data.get("density")),
+                gamma_centered=kpt_data.get("gammaCentered", True),
+            )
+        else:
+            # Scalar value treated as density directly.
+            # 标量值直接视为密度。
+            kpoints = FrontendKpointParams(density=_parse_float(kpt_data))
+
+        # 6. resource
+        # Strip trailing "h"/"H" from runtime strings such as "72h".
+        # 从 "72h" 等运行时字符串中去除尾部的 "h"/"H"。
+        res_data = data.get("resource", {})
+        if isinstance(res_data, dict):
+            runtime_str = str(res_data.get("runtime", "72"))
+            runtime = int(runtime_str.rstrip("hH"))
+            resources = FrontendResourceParams(runtime=runtime, cores=res_data.get("cores", 72))
+        else:
+            resources = FrontendResourceParams()
+
+        # 7. prev_dir
+        # Prefer settings["from_prev_calc"] then top-level prev_dir / prevDir.
+        # 优先使用 settings["from_prev_calc"]，其次是顶层的 prev_dir / prevDir。
+        prev_dir = (
+            settings.get("from_prev_calc")
+            or data.get("prev_dir")
+            or data.get("prevDir")
+        )
+
+        # 8. vdW
+        vdw_method = data.get("vdw", "None")
+        vdw = FrontendVdwParams(method=FRONTEND_VDW_MAP.get(vdw_method, vdw_method))
+
+        # 9. 偶极校正
+        dipole = FrontendDipoleParams(enabled=data.get("dipole", False))
+
+        # 10. 频率参数
+        # Frequency parameters are only constructed for frequency calc types.
+        # 频率参数仅在计算类型为频率计算时构建。
+        frequency = None
+        if backend_calc_type in ("freq", "freq_ir"):
+            frequency = FrontendFrequencyParams(
+                ibrion=_parse_int(settings.get("IBRION", 5)),
+                potim=_parse_float(settings.get("POTIM", 0.015)),
+                nfree=_parse_int(settings.get("NFREE", 2)),
+                vibrate_mode=settings.get("vibrate_mode", "inherit"),
+                adsorbate_formula=settings.get("adsorbate_formula"),
+                adsorbate_prefer=settings.get("adsorbate_formula_prefer", "tail"),
+                calc_ir=settings.get("calc_ir", False),
+            )
+            if "vibrate_indices" in settings and settings["vibrate_indices"]:
+                try:
+                    # Parse comma-separated index string to integer list.
+                    # 将逗号分隔的索引字符串解析为整数列表。
+                    frequency.vibrate_indices = [
+                        int(x.strip())
+                        for x in str(settings["vibrate_indices"]).split(",")
+                    ]
+                except ValueError:
+                    pass
+
+        # 11. Lobster
+        lobster = None
+        if backend_calc_type == "lobster":
+            lobster = FrontendLobsterParams(
+                lobsterin_mode=settings.get("lobsterin_mode", "template"),
+                overwritedict=data.get("lobsterin") or None,
+                custom_lobsterin_lines=data.get("lobsterin_custom_lines") or None,
+            )
+
+        # 12. NBO
+        nbo = None
+        if backend_calc_type == "nbo":
+            nbo_config = settings.get("nbo_config", {})
+            nbo = FrontendNBOParams(
+                basis_source="ANO-RCC-MB" if settings.get("basis_source") == "default" else "custom",
+                custom_basis_path=settings.get("nboBasisPath"),
+                occ_1c=_parse_float(nbo_config.get("occ_1c", 1.60)),
+                occ_2c=_parse_float(nbo_config.get("occ_2c", 1.85)),
+                print_cube=nbo_config.get("print_cube", "F"),
+                density=nbo_config.get("density", "F"),
+                vis_start=_parse_int(nbo_config.get("vis_start", 0)),
+                vis_end=_parse_int(nbo_config.get("vis_end", -1)),
+                mesh=nbo_config.get("mesh", [0, 0, 0]) if isinstance(nbo_config.get("mesh"), list) else [0, 0, 0],
+                box_int=nbo_config.get("box_int", [1, 1, 1]) if isinstance(nbo_config.get("box_int"), list) else [1, 1, 1],
+                origin_fact=_parse_float(nbo_config.get("origin_fact", 0.00)),
+            )
+
+        # ── 13. MAGMOM ────────────────────────────────────────────────────
+        # 前端可通过两种方式传入：
+        #   a) settings["MAGMOM"] = [5.0, 5.0, 3.0]     per-atom 列表
+        #   b) settings["MAGMOM"] = "5.0 5.0 3.0"       空格分隔字符串
+        #   c) settings["MAGMOM"] = {"Fe": 5.0, "Co": 3.0}  per-element dict
+        # The frontend may supply MAGMOM in three forms:
+        #   a) List[float]        — per-atom order
+        #   b) space-delimited str — per-atom order
+        #   c) Dict[str, float]   — per-element mapping
+        magmom = None
+        raw_magmom = settings.get("MAGMOM")
+        if raw_magmom is not None:
+            magmom = FrontendMagmomParams(enabled=True)
+            if isinstance(raw_magmom, dict):
+                # per-element dict
+                magmom.per_element = {k: float(v) for k, v in raw_magmom.items()}
+            else:
+                # per-atom 列表或字符串
+                # Per-atom list or space-delimited string.
+                magmom.per_atom = _parse_magmom_list(raw_magmom)
+
+        # ── 14. DFT+U ─────────────────────────────────────────────────────
+        # 前端传入格式（推荐，按元素顺序）：
+        #   settings["LDAUU"] = {"Fe": 4.0, "Co": 3.0}
+        #   settings["LDAUL"] = {"Fe": 2,   "Co": 2}
+        #   settings["LDAUJ"] = {"Fe": 0.0, "Co": 0.0}
+        # 或旧格式（空格字符串，需配合元素列表）：
+        #   settings["LDAUU"] = "4.0 3.0"  +  settings["elements"] = ["Fe", "Co"]
+        # Recommended frontend format (per-element dicts):
+        #   settings["LDAUU"] = {"Fe": 4.0, "Co": 3.0}
+        #   settings["LDAUL"] = {"Fe": 2,   "Co": 2}
+        #   settings["LDAUJ"] = {"Fe": 0.0, "Co": 0.0}
+        # Legacy format (space-separated strings + elements list):
+        #   settings["LDAUU"] = "4.0 3.0"  +  settings["elements"] = ["Fe", "Co"]
+        dft_u = None
+        raw_ldauu = settings.get("LDAUU")
+        raw_ldaul = settings.get("LDAUL")
+        raw_ldauj = settings.get("LDAUJ")
+
+        if raw_ldauu is not None or raw_ldaul is not None:
+            dft_u = FrontendDFTPlusUParams(enabled=True)
+
+            if isinstance(raw_ldauu, dict):
+                # ── 推荐格式：直接是 per-element dict ──────────────────────
+                # Recommended format: LDAUU is already a per-element dict.
+                # 推荐格式：LDAUU 已经是 per-element 字典。
+                elements = list(raw_ldauu.keys())
+                ldauu_dict = {k: float(v) for k, v in raw_ldauu.items()}
+                ldaul_dict = (
+                    {k: int(v) for k, v in raw_ldaul.items()}
+                    if isinstance(raw_ldaul, dict)
+                    else {e: 0 for e in elements}
+                )
+                ldauj_dict = (
+                    {k: float(v) for k, v in raw_ldauj.items()}
+                    if isinstance(raw_ldauj, dict)
+                    else {e: 0.0 for e in elements}
+                )
+                dft_u.values = {
+                    elem: {
+                        "LDAUU": ldauu_dict.get(elem, 0.0),
+                        "LDAUL": ldaul_dict.get(elem, 0),
+                        "LDAUJ": ldauj_dict.get(elem, 0.0),
+                    }
+                    for elem in elements
+                }
+
+            else:
+                # ── 兼容格式：空格字符串 + elements 列表 ──────────────────
+                # Legacy format: space-separated string values require an explicit
+                # elements list to pair with U values.
+                # 兼容格式：空格分隔的字符串值需要显式 elements 列表与 U 值配对。
+                elements = settings.get("elements", [])
+                ldauu_vals = _parse_number_list(raw_ldauu)
+                ldaul_vals = _parse_number_list(raw_ldaul)
+                ldauj_vals = _parse_number_list(raw_ldauj)
+
+                if elements and len(elements) == len(ldauu_vals):
+                    dft_u.values = {
+                        elem: {
+                            "LDAUU": float(ldauu_vals[i]) if i < len(ldauu_vals) else 0.0,
+                            "LDAUL": int(ldaul_vals[i])   if i < len(ldaul_vals)  else 0,
+                            "LDAUJ": float(ldauj_vals[i]) if i < len(ldauj_vals)  else 0.0,
+                        }
+                        for i, elem in enumerate(elements)
+                    }
+                else:
+                    # 无法匹配元素，禁用 DFT+U 并警告
+                    # Cannot pair elements with U values; disable DFT+U and warn.
+                    logger.warning(
+                        "DFT+U: LDAUU 为字符串格式但未提供 settings['elements'] 列表，"
+                        "或元素数量与 U 值数量不匹配，DFT+U 将被忽略。"
+                        "推荐使用 dict 格式: settings['LDAUU'] = {'Fe': 4.0, 'Co': 3.0}"
+                    )
+                    dft_u = None
+
+        return VaspWorkflowParams(
+            calc_type=backend_calc_type,
+            structure=structure,
+            functional=functional,
+            kpoints_density=kpoints.density or 50.0,
+            prev_dir=prev_dir,
+            precision=precision,
+            kpoints=kpoints,
+            resources=resources,
+            vdw=vdw,
+            dipole=dipole,
+            frequency=frequency,
+            lobster=lobster,
+            nbo=nbo,
+            magmom=magmom,
+            dft_u=dft_u,
+            custom_incar=custom_incar if custom_incar else None,
+        )
+
+
+# ============================================================================
+# 辅助解析函数
+# ============================================================================
+
+def _parse_int(value: Any) -> Optional[int]:
+    """Safely coerce *value* to ``int``, returning ``None`` on failure.
+
+    Recognises ``None``, empty string, and the em-dash placeholder ``"—"`` as
+    absent values.
+
+    安全地将 *value* 转换为 ``int``，失败时返回 ``None``。
+
+    将 ``None``、空字符串以及占位符 ``"—"`` 视为缺失值。
+    """
+    if value is None or value == "" or value == "—":
+        return None
+    try:
+        return int(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_float(value: Any) -> Optional[float]:
+    """Safely coerce *value* to ``float``, returning ``None`` on failure.
+
+    Recognises ``None``, empty string, and the em-dash placeholder ``"—"`` as
+    absent values.
+
+    安全地将 *value* 转换为 ``float``，失败时返回 ``None``。
+
+    将 ``None``、空字符串以及占位符 ``"—"`` 视为缺失值。
+    """
+    if value is None or value == "" or value == "—":
+        return None
+    try:
+        return float(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_number(value: Any) -> Union[int, float, str]:
+    """Safely parse *value* as a number, preferring ``int`` over ``float``.
+
+    Returns the original value unchanged when numeric parsing fails.
+
+    安全地将 *value* 解析为数值，优先返回 ``int``（整型优先）。
+
+    数值解析失败时原样返回原始值。
+    """
+    if value is None or value == "" or value == "—":
+        return value
+    try:
+        f = float(str(value))
+        # Return int when the float is a whole number.
+        # 浮点数为整数时返回 int。
+        return int(f) if f == int(f) else f
+    except (ValueError, TypeError):
+        return value
+
+
+def _parse_number_list(value: Any) -> List[float]:
+    """Parse a string or list into a ``List[float]`` for DFT+U legacy format.
+
+    Args:
+        value: A ``List``, a space-separated string, or ``None``.
+
+    Returns:
+        Parsed list of floats, or an empty list when *value* is ``None``.
+
+    将字符串或列表解析为 ``List[float]``，用于 DFT+U 兼容格式。
+
+    参数：
+        value: ``List``、空格分隔的字符串或 ``None``。
+
+    返回：
+        解析后的浮点数列表；*value* 为 ``None`` 时返回空列表。
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [float(v) for v in value]
+    if isinstance(value, str):
+        return [float(x) for x in value.split()]
+    return []
+
+
+def _parse_magmom_list(value: Any) -> List[float]:
+    """Parse a MAGMOM value into a per-site ``List[float]``.
+
+    Handles three input forms:
+    - ``List[float]``        — returned directly after float conversion.
+    - Space-separated string — split and converted; ``"N*val"`` shorthand is
+      expanded (e.g. ``"3*5.0"`` → ``[5.0, 5.0, 5.0]``).
+    - Anything else          — returns an empty list.
+
+    将 MAGMOM 值解析为 per-site ``List[float]``。
+
+    支持三种输入形式：
+    - ``List[float]``       — float 转换后直接返回。
+    - 空格分隔的字符串     — 分割并转换；支持 ``"N*val"`` 简写展开
+      （如 ``"3*5.0"`` → ``[5.0, 5.0, 5.0]``）。
+    - 其他类型             — 返回空列表。
+    """
+    if isinstance(value, list):
+        return [float(v) for v in value]
+    if isinstance(value, str):
+        result = []
+        for part in value.split():
+            if "*" in part:
+                # Expand "count*value" shorthand notation.
+                # 展开 "count*value" 简写记法。
+                count, val = part.split("*")
+                result.extend([float(val)] * int(count))
+            else:
+                result.append(float(part))
+        return result
+    return []
+
+
+# ============================================================================
+# 便捷函数
+# ============================================================================
+
+def quick_bulk_relax(
+    structure: Union[str, Path],
+    functional: str = "PBE",
+    kpoints_density: float = 50.0,
+    output_dir: Optional[str] = None,
+    **kwargs
+) -> str:
+    """Run a bulk structure relaxation and return the output directory path.
+
+    Args:
+        structure:       Path to the input structure file or directory.
+        functional:      XC functional name (default ``"PBE"``).
+        kpoints_density: K-point density (default 50.0).
+        output_dir:      Target output directory; auto-generated when ``None``.
+        **kwargs:        Additional ``VaspWorkflowParams`` fields set via
+            ``setattr``.
+
+    Returns:
+        Absolute path to the output directory as a string.
+
+    执行体相结构优化并返回输出目录路径。
+
+    参数：
+        structure:       输入结构文件或目录的路径。
+        functional:      XC 泛函名称（默认 ``"PBE"``）。
+        kpoints_density: K 点密度（默认 50.0）。
+        output_dir:      目标输出目录；为 ``None`` 时自动生成。
+        **kwargs:        通过 ``setattr`` 设置的额外 ``VaspWorkflowParams`` 字段。
+
+    返回：
+        输出目录的绝对路径字符串。
+    """
+    params = VaspWorkflowParams(
+        calc_type="bulk_relax",
+        structure=structure,
+        functional=functional,
+        kpoints_density=kpoints_density,
+        output_dir=output_dir,
+    )
+    for k, v in kwargs.items():
+        if hasattr(params, k):
+            setattr(params, k, v)
+    return VaspAPI().run_workflow(params)["output_dir"]
+
+
+def quick_slab_relax(
+    structure: Union[str, Path],
+    functional: str = "PBE",
+    kpoints_density: float = 25.0,
+    output_dir: Optional[str] = None,
+    **kwargs
+) -> str:
+    """Run a surface slab structure relaxation and return the output directory path.
+
+    Args:
+        structure:       Path to the input structure file or directory.
+        functional:      XC functional name (default ``"PBE"``).
+        kpoints_density: K-point density (default 25.0).
+        output_dir:      Target output directory; auto-generated when ``None``.
+        **kwargs:        Additional ``VaspWorkflowParams`` fields set via
+            ``setattr``.
+
+    Returns:
+        Absolute path to the output directory as a string.
+
+    执行表面 slab 结构优化并返回输出目录路径。
+
+    参数：
+        structure:       输入结构文件或目录的路径。
+        functional:      XC 泛函名称（默认 ``"PBE"``）。
+        kpoints_density: K 点密度（默认 25.0）。
+        output_dir:      目标输出目录；为 ``None`` 时自动生成。
+        **kwargs:        通过 ``setattr`` 设置的额外 ``VaspWorkflowParams`` 字段。
+
+    返回：
+        输出目录的绝对路径字符串。
+    """
+    params = VaspWorkflowParams(
+        calc_type="slab_relax",
+        structure=structure,
+        functional=functional,
+        kpoints_density=kpoints_density,
+        output_dir=output_dir,
+    )
+    for k, v in kwargs.items():
+        if hasattr(params, k):
+            setattr(params, k, v)
+    return VaspAPI().run_workflow(params)["output_dir"]
+
+
+def quick_dos(
+    prev_dir: Union[str, Path],
+    functional: Optional[str] = None,
+    kpoints_density: float = 50.0,
+    output_dir: Optional[str] = None,
+) -> str:
+    """Run a DOS static calculation from a prior relaxation directory.
+
+    Args:
+        prev_dir:        Directory of the preceding relaxation (source of CHGCAR).
+        functional:      XC functional name; defaults to ``"PBE"`` when ``None``.
+        kpoints_density: K-point density (default 50.0).
+        output_dir:      Target output directory; auto-generated when ``None``.
+
+    Returns:
+        Absolute path to the output directory as a string.
+
+    从前序弛豫目录运行态密度静态计算。
+
+    参数：
+        prev_dir:        前序弛豫目录（CHGCAR 的来源）。
+        functional:      XC 泛函名称；为 ``None`` 时默认使用 ``"PBE"``。
+        kpoints_density: K 点密度（默认 50.0）。
+        output_dir:      目标输出目录；为 ``None`` 时自动生成。
+
+    返回：
+        输出目录的绝对路径字符串。
+    """
+    params = VaspWorkflowParams(
+        calc_type="static_dos",
+        structure=str(prev_dir),
+        prev_dir=prev_dir,
+        functional=functional or "PBE",
+        kpoints_density=kpoints_density,
+        output_dir=output_dir,
+    )
+    return VaspAPI().run_workflow(params)["output_dir"]
+
+
+def quick_md(
+    structure: Union[str, Path],
+    ensemble: str = "nvt",
+    temperature: float = 300.0,
+    nsteps: int = 1000,
+    output_dir: Optional[str] = None,
+) -> str:
+    """Run a molecular dynamics simulation and return the output directory path.
+
+    Args:
+        structure:   Path to the input structure file or directory.
+        ensemble:    Statistical ensemble — ``"nvt"`` or ``"npt"``.
+        temperature: Target temperature in K (isothermal run; start = end).
+        nsteps:      Total number of MD steps (NSW).
+        output_dir:  Target output directory; auto-generated when ``None``.
+
+    Returns:
+        Absolute path to the output directory as a string.
+
+    运行分子动力学模拟并返回输出目录路径。
+
+    参数：
+        structure:   输入结构文件或目录的路径。
+        ensemble:    统计系综——``"nvt"`` 或 ``"npt"``。
+        temperature: 目标温度（K），等温模拟时起始温度与终止温度相同。
+        nsteps:      MD 总步数，对应 NSW。
+        output_dir:  目标输出目录；为 ``None`` 时自动生成。
+
+    返回：
+        输出目录的绝对路径字符串。
+    """
+    params = VaspWorkflowParams(
+        calc_type=f"md_{ensemble}",
+        structure=structure,
+        md=FrontendMDParams(
+            ensemble=ensemble,
+            start_temp=temperature,
+            end_temp=temperature,
+            nsteps=nsteps,
+        ),
+        output_dir=output_dir,
+    )
+    return VaspAPI().run_workflow(params)["output_dir"]
