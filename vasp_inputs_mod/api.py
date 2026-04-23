@@ -64,8 +64,10 @@ from typing import Any, Dict, List, Optional, Union
 
 from pymatgen.core import Structure
 
-from .workflow_engine import CalcType, WorkflowConfig, WorkflowEngine
+from .calc_type import CalcType
+from .workflow_engine import WorkflowConfig, WorkflowEngine
 from .script import Script, CalcCategory
+from .validator import validate as _validator_validate, ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -651,6 +653,7 @@ class VaspWorkflowParams:
     frequency: Optional[FrontendFrequencyParams] = None
     lobster: Optional[FrontendLobsterParams] = None
     nbo: Optional[FrontendNBOParams] = None
+    nbo_config: Optional[Dict[str, Any]] = None
     md: Optional[FrontendMDParams] = None
     neb: Optional[FrontendNEBParams] = None
 
@@ -721,15 +724,10 @@ class VaspWorkflowParams:
             raise ValueError(f"未知的计算类型: {self.calc_type}")
 
         # ── 构建 INCAR 覆盖参数 ────────────────────────────────────────────
-        # Build the INCAR override dict; later entries take higher priority.
-        # 构建 INCAR 覆盖字典；越靠后的条目优先级越高。
         user_incar_overrides: Dict[str, Any] = {}
         if self.custom_incar:
             user_incar_overrides.update(self.custom_incar)
 
-        # precision
-        # Apply precision overrides when the field value is truthy (non-None, non-zero).
-        # 仅在字段值为真值（非 None、非零）时才写入精度覆盖。
         if self.precision:
             p = self.precision
             if p.encut:  user_incar_overrides["ENCUT"]  = p.encut
@@ -738,8 +736,6 @@ class VaspWorkflowParams:
             if p.nedos:  user_incar_overrides["NEDOS"]  = p.nedos
 
         # frequency
-        # Only inject frequency tags when the calc type actually runs a frequency job.
-        # 仅在计算类型确实为频率计算时才注入频率相关 INCAR 标记。
         if self.frequency and backend_calc_type in (CalcType.FREQ, CalcType.FREQ_IR):
             f = self.frequency
             user_incar_overrides.update({
@@ -748,16 +744,10 @@ class VaspWorkflowParams:
                 "NFREE":  f.nfree,
             })
             if f.calc_ir:
-                # IR calculation requires DFPT: switch IBRION to 7 and enable LEPSILON.
-                # IR 计算需要 DFPT：将 IBRION 切换为 7 并启用 LEPSILON。
                 user_incar_overrides["LEPSILON"] = True
                 user_incar_overrides["IBRION"]   = 7
 
         # ── MAGMOM ────────────────────────────────────────────────────────
-        # pymatgen sets.py:577 期望 MAGMOM 是 List[float]（per-site）
-        # 或 Dict[str, float]（per-element，pymatgen 会按结构展开）
-        # pymatgen sets.py:577 expects MAGMOM as List[float] (per-site) or
-        # Dict[str, float] (per-element; pymatgen expands it against the structure).
         if self.magmom and self.magmom.enabled:
             if self.magmom.per_atom:
                 # 直接传 per-site 列表，pymatgen 原样写入 INCAR
@@ -778,10 +768,6 @@ class VaspWorkflowParams:
             })
 
         # ── DFT+U ─────────────────────────────────────────────────────────
-        # pymatgen sets.py:613 期望 LDAUU/LDAUL/LDAUJ 是 Dict[str, float/int]
-        # 例：{"Fe": 4.0, "Co": 3.0}，而不是字符串或列表
-        # pymatgen sets.py:613 expects LDAUU/LDAUL/LDAUJ as Dict[str, float/int],
-        # e.g. {"Fe": 4.0, "Co": 3.0} — NOT a string or list.
         if self.dft_u and self.dft_u.enabled:
             dft_u_fmt = self.dft_u.to_pymatgen_format()
             if dft_u_fmt:
@@ -801,8 +787,6 @@ class VaspWorkflowParams:
                 user_incar_overrides["POTIM"] = self.md.time_step
 
         # ── 构建 WorkflowConfig ───────────────────────────────────────────
-        # Construct the engine config with the merged INCAR overrides.
-        # 使用合并后的 INCAR 覆盖参数构建引擎配置。
         config = WorkflowConfig(
             calc_type=backend_calc_type,
             structure=self.structure,
@@ -831,6 +815,9 @@ class VaspWorkflowParams:
         if self.lobster:
             config.lobster_overwritedict   = self.lobster.overwritedict
             config.lobster_custom_lines    = self.lobster.custom_lobsterin_lines
+
+        if self.nbo_config is not None:
+            config.nbo_config = self.nbo_config
 
         return config
 
@@ -877,8 +864,7 @@ class VaspWorkflowParams:
             "walltime":      res.runtime if res else None,
             "queue":         res.queue   if res else None,
         }
-        # Flag the context when a vdw_kernel.bindat file is needed at runtime.
-        # 当运行时需要 vdw_kernel.bindat 文件时标记上下文。
+
         if self.vdw and self.vdw.method != "None":
             context["need_vdw"] = True
         return context
@@ -954,10 +940,6 @@ class VaspAPI:
         logger.info(f"开始执行工作流: calc_type={params.calc_type}")
 
         config = params.to_workflow_config()
-        errors = config.validate()
-        if errors:
-            raise ValueError("配置验证失败:\n" + "\n".join(f"  - {e}" for e in errors))
-
         output_dir = self.engine.run(config)
         result = {
             "success":    True,
@@ -999,42 +981,28 @@ class VaspAPI:
         返回：
             人类可读的错误字符串列表（无错误时为空列表）。
         """
-        errors = []
-        valid_calc_types = [
-            "bulk_relax", "slab_relax",
-            "static_sp", "static_dos", "static_charge", "static_elf",
-            "neb", "dimer", "freq", "freq_ir",
-            "lobster", "nmr_cs", "nmr_efg", "nbo",
-            "md_nvt", "md_npt",
-        ]
-        if params.calc_type not in valid_calc_types:
-            errors.append(f"不支持的计算类型: {params.calc_type}")
+        if params is None:
+            return ["VaspWorkflowParams object is None"]
 
-        if isinstance(params.structure, str):
-            if not Path(params.structure).exists() and params.structure.strip():
-                if len(params.structure) < 10:
-                    errors.append("结构输入无效")
-        elif isinstance(params.structure, Path):
-            if not params.structure.exists():
-                errors.append(f"结构文件不存在: {params.structure}")
+        # Delegate all parameter-level checks to the shared validator.
+        # Catch ValidationError and return its error list to preserve the
+        # List[str] return contract for existing callers.
+        errors: List[str] = []
+        try:
+            _validator_validate(
+                calc_type=params.calc_type,
+                structure=params.structure,
+                functional=params.functional,
+                kpoints_density=params.kpoints_density,
+                output_dir=params.output_dir,
+                prev_dir=params.prev_dir,
+            )
+        except ValidationError as exc:
+            errors.extend(exc.errors)
 
-        valid_functionals = ["PBE", "RPBE", "BEEF", "BEEFVTST", "SCAN", "HSE", "LDA"]
-        if params.functional not in valid_functionals:
-            logger.warning(f"未识别的泛函: {params.functional}，将尝试使用默认设置")
-
-        if params.kpoints_density <= 0:
-            errors.append("K点密度必须大于0")
-
-        if params.prev_dir:
-            prev_path = Path(params.prev_dir)
-            if not prev_path.exists():
-                errors.append(f"前序目录不存在: {params.prev_dir}")
-            elif not (prev_path / "CONTCAR").exists():
-                errors.append(f"前序目录中缺少 CONTCAR: {params.prev_dir}")
-
-        if params.calc_type == "neb" and not params.neb:
-            errors.append("NEB计算需要提供neb参数")
-
+        # API-level check that operates on the typed FrontendMDParams object —
+        # cannot be expressed in the generic validator without coupling it to
+        # internal dataclasses.
         if params.calc_type in ("md_nvt", "md_npt") and params.md:
             if params.md.nsteps <= 0:
                 errors.append("MD步数必须大于0")
@@ -1253,27 +1221,6 @@ class FrontendAdapter:
          ``VaspWorkflowParams`` 上。
       3. 在 ``to_workflow_config()`` 中将其传递给 ``WorkflowConfig``。
     """
-
-    @staticmethod
-    def from_frontend_json(json_str: str) -> VaspWorkflowParams:
-        """Parse a JSON string and delegate to ``from_frontend_dict``.
-
-        Args:
-            json_str: JSON-encoded frontend parameter dict.
-
-        Returns:
-            Constructed ``VaspWorkflowParams`` instance.
-
-        解析 JSON 字符串并委托给 ``from_frontend_dict``。
-
-        参数：
-            json_str: JSON 编码的前端参数字典。
-
-        返回：
-            构建的 ``VaspWorkflowParams`` 实例。
-        """
-        import json
-        return FrontendAdapter.from_frontend_dict(json.loads(json_str))
 
     @staticmethod
     def from_frontend_dict(data: Dict[str, Any]) -> VaspWorkflowParams:
@@ -1698,178 +1645,550 @@ def _parse_magmom_list(value: Any) -> List[float]:
 
 
 # ============================================================================
-# 便捷函数
+# 主入口 — generate_inputs()
 # ============================================================================
 
-def quick_bulk_relax(
-    structure: Union[str, Path],
+def _normalise_dft_u(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Normalise user-facing DFT+U dict to the internal per-element format.
+
+    Accepts short keys (``"U"``, ``"l"``, ``"J"``) or full VASP tag names
+    (``"LDAUU"``, ``"LDAUL"``, ``"LDAUJ"``).  A plain scalar is treated as the
+    U value with l=2 (d-shell) and J=0.
+
+    Examples::
+
+        {"Fe": {"U": 4.0, "l": 2, "J": 0.0}}   # short keys
+        {"Fe": {"LDAUU": 4.0, "LDAUL": 2}}       # VASP tag names
+        {"Fe": 4.0}                               # scalar shorthand
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+    for elem, spec in raw.items():
+        if isinstance(spec, (int, float)):
+            result[elem] = {"LDAUU": float(spec), "LDAUL": 2, "LDAUJ": 0.0}
+        else:
+            u = float(spec.get("U", spec.get("LDAUU", 0.0)))
+            l = int(spec.get("l", spec.get("L", spec.get("LDAUL", 2))))
+            j = float(spec.get("J", spec.get("LDAUJ", 0.0)))
+            result[elem] = {"LDAUU": u, "LDAUL": l, "LDAUJ": j}
+    return result
+
+
+def generate_inputs(
+    calc_type: str,
+    structure: Union[str, Path] = "POSCAR",
     functional: str = "PBE",
     kpoints_density: float = 50.0,
-    output_dir: Optional[str] = None,
-    **kwargs
-) -> str:
-    """Run a bulk structure relaxation and return the output directory path.
+    output_dir: Optional[Union[str, Path]] = None,
+    prev_dir: Optional[Union[str, Path]] = None,
+    *,
+    calc_ir: bool = False,
+    incar: Optional[Dict[str, Any]] = None,
+    magmom: Optional[Union[List[float], Dict[str, float]]] = None,
+    dft_u: Optional[Dict[str, Any]] = None,
+    cohp_generator: Optional[Union[str, List[str]]] = None,
+    lobsterin: Optional[Dict[str, Any]] = None,
+    nbo_config: Optional[Dict[str, Any]] = None,
+    walltime: Optional[str] = None,
+    ncores: Optional[int] = None,
+    dry_run: bool = False,
+) -> Union[str, Dict[str, Any]]:
+    """Generate VASP input files for one calculation — the single user-facing entry point.
+    为单次计算生成 VASP 输入文件——唯一面向用户的入口函数。
+
+    All internal complexity (adapter layer, dataclasses, engine dispatch) is
+    fully encapsulated.  Callers only need to supply their scientific parameters;
+    no knowledge of the internal pipeline is required.
+    所有内部复杂性（适配层、数据类、引擎调度）均被完全封装。
+    调用方只需提供科学参数，无需了解内部流程。
 
     Args:
-        structure:       Path to the input structure file or directory.
-        functional:      XC functional name (default ``"PBE"``).
-        kpoints_density: K-point density (default 50.0).
-        output_dir:      Target output directory; auto-generated when ``None``.
-        **kwargs:        Additional ``VaspWorkflowParams`` fields set via
-            ``setattr``.
+        calc_type (str): Calculation type string.  Controls which VASP input
+            template and defaults are used.  Accepted values:
+            ``"bulk_relax"`` — bulk structure relaxation (ISIF=3);
+            ``"slab_relax"`` — surface slab relaxation (ISIF=2);
+            ``"static_sp"``  — single-point energy;
+            ``"static_dos"`` — single-point + projected DOS (writes CHGCAR);
+            ``"static_charge"`` — single-point + full charge density;
+            ``"static_elf"`` — single-point + electron localisation function;
+            ``"freq"`` — vibrational frequencies; pair with ``calc_ir=True`` for IR/DFPT;
+            ``"lobster"``    — COHP bonding analysis (writes WAVECAR);
+            ``"nmr_cs"`` / ``"nmr_efg"`` — NMR chemical shift / EFG;
+            ``"nbo"``        — Natural Bond Orbital analysis;
+            ``"neb"``        — Nudged Elastic Band transition-state search;
+            ``"dimer"``      — Dimer method saddle-point search;
+            ``"md_nvt"`` / ``"md_npt"`` — molecular dynamics (NVT / NPT).
+        calc_type (str): 计算类型字符串，决定使用哪套 VASP 输入模板和默认参数。
+            ``"bulk_relax"`` — 体相结构弛豫（ISIF=3）；
+            ``"slab_relax"`` — 表面 slab 弛豫（ISIF=2）；
+            ``"static_sp"``  — 单点能；
+            ``"static_dos"`` — 单点 + 投影态密度（输出 CHGCAR）；
+            ``"static_charge"`` — 单点 + 全电荷密度；
+            ``"static_elf"`` — 单点 + 电子局域函数；
+            ``"freq"`` — 振动频率；配合 ``calc_ir=True`` 使用可计算 IR/DFPT；
+            ``"lobster"``    — COHP 化学键分析（输出 WAVECAR）；
+            ``"nmr_cs"`` / ``"nmr_efg"`` — NMR 化学位移 / 电场梯度；
+            ``"nbo"``        — 自然键轨道分析；
+            ``"neb"``        — NEB 过渡态搜索；
+            ``"dimer"``      — Dimer 鞍点搜索；
+            ``"md_nvt"`` / ``"md_npt"`` — 分子动力学（NVT / NPT）。
+
+        structure (str | Path): Path to the input structure file (POSCAR, CIF,
+            CONTCAR) or to a directory that contains a CONTCAR.
+            Default: ``"POSCAR"`` (file in the current working directory).
+        structure (str | Path): 输入结构文件（POSCAR、CIF、CONTCAR）的路径，
+            或包含 CONTCAR 的目录路径。默认值：``"POSCAR"``（当前工作目录下的文件）。
+
+        functional (str): Exchange-correlation functional label.  The functional
+            controls both the pymatgen ``InputSet`` selection and the INCAR patches
+            applied on top of the base settings.  Accepted values:
+            ``"PBE"`` (default) — standard GGA;
+            ``"RPBE"`` — revised PBE (better adsorption energies);
+            ``"BEEF"`` — BEEF-vdW non-local van-der-Waals (requires
+              vdw_kernel.bindat and a BEEF-patched VASP binary);
+            ``"HSE"``  — HSE06 hybrid (accurate band gaps, expensive);
+            ``"SCAN"`` — SCAN meta-GGA;
+            ``"LDA"``  — local density approximation.
+        functional (str): 交换关联泛函标签，同时控制 pymatgen ``InputSet`` 的选择
+            和叠加在基础设置之上的 INCAR 补丁。接受的值：
+            ``"PBE"``（默认）— 标准 GGA；
+            ``"RPBE"`` — 修正 PBE（吸附能更准确）；
+            ``"BEEF"`` — BEEF-vdW 非局域范德华（需要 vdw_kernel.bindat 和
+              BEEF 补丁版 VASP 二进制）；
+            ``"HSE"``  — HSE06 杂化泛函（能隙准确，计算代价高）；
+            ``"SCAN"`` — SCAN meta-GGA；
+            ``"LDA"``  — 局域密度近似。
+
+        kpoints_density (float): Reciprocal-space k-point sampling density in
+            units of Å⁻¹ (points per reciprocal-lattice length).  The actual
+            k-mesh is generated automatically by pymatgen using this density.
+            Default: ``50.0``.  Typical values: 50 for bulk, 25 for surfaces.
+        kpoints_density (float): 倒空间 K 点采样密度（单位 Å⁻¹，即每倒格矢长度
+            的网格点数）。pymatgen 据此自动生成 K 网格。默认值：``50.0``。
+            典型值：体相 50，表面 25。
+
+        output_dir (str | Path | None): Directory where the generated VASP input
+            files (INCAR, KPOINTS, POSCAR, POTCAR, lobsterin, …) are written.
+            When ``None`` the engine auto-generates a directory name under the
+            current working directory based on the ``calc_type``.
+        output_dir (str | Path | None): 生成的 VASP 输入文件（INCAR、KPOINTS、
+            POSCAR、POTCAR、lobsterin 等）写入的目标目录。为 ``None`` 时，引擎
+            根据 ``calc_type`` 在当前工作目录下自动生成目录名。
+
+        prev_dir (str | Path | None): Directory of a preceding calculation.
+            Enables three automatic behaviours:
+
+            1. **Structure extraction** — when no ``structure`` file exists at
+               the given path (or the default ``"POSCAR"`` is absent), the
+               engine reads ``prev_dir/CONTCAR`` (if non-empty) or falls back
+               to ``prev_dir/POSCAR``.
+
+            2. **INCAR inheritance** — settings from ``prev_dir/INCAR`` become
+               the base INCAR; workflow type-defaults are **not** applied on
+               top so ENCUT, EDIFF, EDIFFG, … carry over automatically.
+               The ``functional`` patch and any ``incar={}`` overrides are
+               still applied above the inherited values.
+
+            3. **WAVECAR/CHGCAR copy** — if ``prev_dir`` contains a non-empty
+               CHGCAR the file is copied into the output directory and
+               ``ICHARG=1`` is set automatically; if only a WAVECAR exists,
+               it is copied and ``ISTART=1`` is set.  Both tags are
+               overridable via ``incar={"ICHARG": X}``.
+
+            Required (or auto-detected) for: ``"static_dos"``,
+            ``"static_charge"``, ``"static_elf"``, ``"lobster"``, ``"nbo"``,
+            ``"dimer"``.
+            Example: ``prev_dir="./01-slab_relax/Fe110"``.
+        prev_dir (str | Path | None): 前序计算目录。启用三项自动行为：
+
+            1. **结构提取** — 若指定的 ``structure`` 路径（或默认 ``"POSCAR"``）
+               不存在，引擎从 ``prev_dir/CONTCAR``（非空优先）或
+               ``prev_dir/POSCAR`` 中读取结构。
+
+            2. **INCAR 继承** — ``prev_dir/INCAR`` 的内容成为基础 INCAR；
+               计算类型工作流默认值**不再**叠加覆盖，ENCUT、EDIFF、EDIFFG
+               等参数自动延续。泛函补丁和 ``incar={}`` 覆盖项仍应用于继承值之上。
+
+            3. **WAVECAR/CHGCAR 复制** — 若 ``prev_dir`` 包含非空 CHGCAR，
+               将其复制到输出目录并自动设置 ``ICHARG=1``；若仅存在 WAVECAR，
+               则复制并设置 ``ISTART=1``。两者均可通过 ``incar={"ICHARG": X}``
+               覆盖。
+
+            以下计算类型需要或可自动检测：``"static_dos"``、``"static_charge"``、
+            ``"static_elf"``、``"lobster"``、``"nbo"``、``"dimer"``。
+            示例：``prev_dir="./01-slab_relax/Fe110"``。
+
+        calc_ir (bool): When ``calc_type="freq"``, set to ``True`` to request an
+            IR-intensity calculation via DFPT.  The following INCAR tags are
+            then injected automatically: ``IBRION=7`` (DFPT driver),
+            ``LEPSILON=True`` (dielectric tensor), ``NWRITE=3``.  These must
+            **not** be overridden via ``incar=``.
+            Default: ``False`` (standard finite-difference frequency).
+        calc_ir (bool): 当 ``calc_type="freq"`` 时，设为 ``True`` 以通过 DFPT 计算
+            红外强度。以下 INCAR 标记将被自动注入：``IBRION=7``（DFPT 驱动器）、
+            ``LEPSILON=True``（介电张量）、``NWRITE=3``。这些标记**不应**通过
+            ``incar=`` 手动覆盖。默认值：``False``（标准有限差分频率计算）。
+
+        incar (dict | None): **The single channel for all INCAR overrides.**
+            Pass any VASP INCAR tag as a plain ``{"TAG": value}`` dict.
+            These values are merged on top of *all* other settings
+            (calc-type defaults, functional patches, DFT+U, MAGMOM) and
+            therefore always win.  Any standard VASP tag is valid — there is
+            no whitelist.  Default: ``None`` (use calc-type defaults only).
+
+            Common examples::
+
+                incar={"EDIFFG": -0.01}          # tighter force convergence
+                incar={"EDIFF":  1e-7}            # tighter electronic convergence
+                incar={"ENCUT":  600}             # raise plane-wave cutoff (eV)
+                incar={"LREAL":  False}           # reciprocal-space projectors
+                incar={"NPAR": 4, "KPAR": 2}     # parallelisation flags
+                incar={"ISMEAR": 0, "SIGMA": 0.05}   # Gaussian smearing
+                incar={"NSW": 300, "POTIM": 0.3}     # relax step count / size
+                incar={"LORBIT": 11, "NEDOS": 3001}  # projected DOS density
+
+        incar (dict | None): **所有 INCAR 覆盖项的唯一通道。**
+            以 ``{"标记": 值}`` 字典的形式传入任意 VASP INCAR 标记。
+            这些值将叠加在*所有*其他设置之上（计算类型默认值、泛函补丁、
+            DFT+U、MAGMOM），因此具有最高优先级。支持所有标准 VASP 标记，
+            无白名单限制。默认值：``None``（仅使用计算类型默认值）。
+
+        magmom (list[float] | dict[str, float] | None): Initial magnetic moments
+            for ISPIN=2 calculations.  Two formats are accepted:
+            - ``List[float]``: per-site moments in the same order as atoms in
+              the structure, e.g. ``[5.0, 5.0, 3.0, 3.0]``.
+            - ``Dict[str, float]``: per-element moments; pymatgen expands the
+              dict against the structure's site order automatically,
+              e.g. ``{"Fe": 5.0, "Co": 3.0, "O": 0.0}``.
+            Default: ``None`` (no MAGMOM tag written; pymatgen uses its own
+            default if the functional requires spin polarisation).
+        magmom (list[float] | dict[str, float] | None): ISPIN=2 计算的初始磁矩。
+            支持两种格式：
+            - ``List[float]``：按结构中原子顺序排列的 per-site 磁矩列表，
+              如 ``[5.0, 5.0, 3.0, 3.0]``。
+            - ``Dict[str, float]``：per-element 磁矩字典，pymatgen 会自动按
+              结构位点顺序展开，如 ``{"Fe": 5.0, "Co": 3.0, "O": 0.0}``。
+            默认值：``None``（不写入 MAGMOM；若泛函要求自旋极化，pymatgen
+            使用自身默认值）。
+
+        dft_u (dict | None): DFT+U (Hubbard U) parameters per element.
+            ``LDAUTYPE=2`` (Dudarev simplified, U_eff = U − J) is added
+            automatically.  Three equivalent input formats are accepted::
+
+                # Recommended — short keys
+                {"Fe": {"U": 4.0, "l": 2, "J": 0.0},
+                 "Co": {"U": 3.0, "l": 2}}
+
+                # VASP tag names
+                {"Fe": {"LDAUU": 4.0, "LDAUL": 2, "LDAUJ": 0.0}}
+
+                # Scalar shorthand — U value only; l=2 (d-orbital), J=0 assumed
+                {"Fe": 4.0, "Co": 3.0}
+
+            Key meanings:
+            ``"U"`` / ``"LDAUU"`` — Coulomb U in eV;
+            ``"l"`` / ``"LDAUL"`` — angular momentum of correlated shell
+              (0=s, 1=p, 2=d, 3=f);
+            ``"J"`` / ``"LDAUJ"`` — exchange J in eV (usually 0 for Dudarev).
+            Default: ``None`` (DFT+U disabled).
+        dft_u (dict | None): 各元素的 DFT+U（Hubbard U）参数。
+            ``LDAUTYPE=2``（Dudarev 简化，U_eff = U − J）将被自动添加。
+            支持三种等价格式（见英文示例）。
+            键的含义：
+            ``"U"`` / ``"LDAUU"`` — Coulomb U（eV）；
+            ``"l"`` / ``"LDAUL"`` — 关联壳层角量子数（0=s,1=p,2=d,3=f）；
+            ``"J"`` / ``"LDAUJ"`` — 交换 J（eV），Dudarev 方案通常为 0。
+            默认值：``None``（禁用 DFT+U）。
+
+        cohp_generator (str | list[str] | None): COHP bond-length range
+            specification(s) passed to the lobsterin file.  Only used when
+            ``calc_type="lobster"``.
+            - ``str``: a single range entry written to ``cohpGenerator`` in
+              the lobsterin overwrite dict,
+              e.g. ``"from 1.5 to 1.9 orbitalwise"``.
+            - ``List[str]``: multiple entries.  The **first** entry replaces
+              the pymatgen-generated ``cohpGenerator`` default; each subsequent
+              entry is appended as a raw ``cohpGenerator …`` line at the end
+              of the lobsterin file.
+            Default: ``None`` (pymatgen generates a default cohpGenerator
+            from the structure's shortest bond lengths).
+        cohp_generator (str | list[str] | None): 写入 lobsterin 文件的 COHP
+            键长范围规格。仅在 ``calc_type="lobster"`` 时生效。
+            - ``str``：单条范围，写入 lobsterin 的 ``cohpGenerator`` 覆盖字典，
+              如 ``"from 1.5 to 1.9 orbitalwise"``。
+            - ``List[str]``：多条范围。**第一条**替换 pymatgen 生成的默认
+              ``cohpGenerator``；其余各条作为 ``cohpGenerator …`` 原始行
+              追加到 lobsterin 文件末尾。
+            默认值：``None``（由 pymatgen 根据结构中最短键长自动生成）。
+
+        lobsterin (dict | None): Additional key-value pairs written directly
+            to the lobsterin overwrite dict, complementing ``cohp_generator``.
+            Only used when ``calc_type="lobster"``.
+            Example: ``{"COHPstartEnergy": -20.0, "COHPendEnergy": 20.0}``.
+            Default: ``None``.
+        lobsterin (dict | None): 直接写入 lobsterin 覆盖字典的额外键值对，
+            与 ``cohp_generator`` 配合使用。仅在 ``calc_type="lobster"`` 时生效。
+            示例：``{"COHPstartEnergy": -20.0, "COHPendEnergy": 20.0}``。
+            默认值：``None``。
+
+        nbo_config (dict | None): NBO analysis configuration passed directly to
+            the NBO input-set builder.  Only used when ``calc_type="nbo"``.
+            Supported keys:
+
+            ``"occ_1c"`` (bool) — enable one-centre NBO occupancy analysis;
+            ``"occ_2c"`` (bool) — enable two-centre NBO occupancy analysis;
+            ``"basis_source"`` (str) — path or identifier for the NBO basis
+              set, e.g. ``"ANO-RCC-MB"`` or a path to a custom basis file;
+            ``"nbo_keywords"`` (list[str]) — additional raw NBO keyword strings
+              appended verbatim to the NBO input file.
+
+            Example::
+
+                nbo_config={
+                    "occ_1c":       True,                 # enable 1-centre occupancy / 启用单中心占据
+                    "occ_2c":       True,                 # enable 2-centre occupancy / 启用双中心占据
+                    "basis_source": "ANO-RCC-MB",         # basis set identifier / 基组标识符
+                    "nbo_keywords": ["$NBO BNDIDX $END"], # extra NBO keywords / 额外 NBO 关键字
+                }
+
+            Default: ``None`` (NBO input set built with defaults only).
+        nbo_config (dict | None): NBO 分析配置，直接传递给 NBO 输入集构造函数。
+            仅在 ``calc_type="nbo"`` 时生效。支持的键：
+
+            ``"occ_1c"`` (bool) — 启用单中心 NBO 占据分析；
+            ``"occ_2c"`` (bool) — 启用双中心 NBO 占据分析；
+            ``"basis_source"`` (str) — NBO 基组路径或标识符，
+              如 ``"ANO-RCC-MB"`` 或自定义基组文件路径；
+            ``"nbo_keywords"`` (list[str]) — 逐字追加到 NBO 输入文件末尾的
+              额外原始 NBO 关键字字符串列表。
+
+            默认值：``None``（使用默认参数构建 NBO 输入集）。
+
+        walltime (str | None): Wall-clock time limit for the PBS submission
+            script in ``"HH:MM:SS"`` format, e.g. ``"48:00:00"``.
+            ``None`` → automatically chosen per calc_type
+            (e.g. ``"124:00:00"`` for relaxations, ``"48:00:00"`` for statics).
+        walltime (str | None): PBS 提交脚本的墙钟时间限制，格式为 ``"HH:MM:SS"``，
+            如 ``"48:00:00"``。``None`` → 按计算类型自动选择
+            （如弛豫默认 ``"124:00:00"``，静态计算默认 ``"48:00:00"``）。
+
+        ncores (int | None): Number of CPU cores for the PBS submission script.
+            ``None`` → automatically chosen per calc_type (default: 72).
+        ncores (int | None): PBS 提交脚本的 CPU 核数。``None`` → 按计算类型自动
+            选择（默认值：72）。
+
+        dry_run (bool): When ``True``, return a configuration preview dict
+            **without writing any files**.  Safe to call with a non-existent
+            structure path — useful for inspecting or testing parameter
+            combinations before a real run.  The returned dict contains:
+            ``"incar"`` — merged INCAR key-value pairs (``dict``);
+            ``"calc_type"`` — resolved CalcType enum value string;
+            ``"functional"`` — uppercased functional string;
+            ``"kpoints_density"`` — k-point density (``float``);
+            ``"lobsterin"`` — lobsterin overwrite dict (Lobster only, if set);
+            ``"lobsterin_custom_lines"`` — extra raw lobsterin lines (if set).
+            Default: ``False``.
+        dry_run (bool): 为 ``True`` 时，**不写入任何文件**，直接返回配置预览字典。
+            允许传入不存在的结构路径——适用于在正式运行前检查或测试参数组合。
+            返回字典包含：
+            ``"incar"`` — 合并后的 INCAR 键值对（``dict``）；
+            ``"calc_type"`` — 解析后的 CalcType 枚举值字符串；
+            ``"functional"`` — 大写泛函字符串；
+            ``"kpoints_density"`` — K 点密度（``float``）；
+            ``"lobsterin"`` — lobsterin 覆盖字典（仅 Lobster，若已设置）；
+            ``"lobsterin_custom_lines"`` — 额外的 lobsterin 原始行（若已设置）。
+            默认值：``False``。
 
     Returns:
-        Absolute path to the output directory as a string.
+        str: ``dry_run=False`` (default) — absolute path to the output
+        directory containing the generated VASP input files.
+        str: ``dry_run=False``（默认）— 包含生成的 VASP 输入文件的输出目录绝对路径。
 
-    执行体相结构优化并返回输出目录路径。
+        dict: ``dry_run=True`` — configuration preview dict (see ``dry_run``
+        parameter above for the key listing).
+        dict: ``dry_run=True`` — 配置预览字典（键列表见上方 ``dry_run`` 参数说明）。
 
-    参数：
-        structure:       输入结构文件或目录的路径。
-        functional:      XC 泛函名称（默认 ``"PBE"``）。
-        kpoints_density: K 点密度（默认 50.0）。
-        output_dir:      目标输出目录；为 ``None`` 时自动生成。
-        **kwargs:        通过 ``setattr`` 设置的额外 ``VaspWorkflowParams`` 字段。
+    Examples::
 
-    返回：
-        输出目录的绝对路径字符串。
+        from flow.api import generate_inputs
+
+        # 1. Standard PBE bulk relaxation — minimal call
+        #    标准 PBE 体相弛豫——最简调用
+        out = generate_inputs("bulk_relax", "POSCAR")
+
+        # 2. Custom INCAR settings — any VASP tag via incar=
+        #    自定义 INCAR 设置——通过 incar= 传入任意 VASP 标记
+        out = generate_inputs(
+            "slab_relax", "POSCAR",
+            incar={"EDIFFG": -0.01, "ENCUT": 600, "NPAR": 4, "LREAL": False},
+        )
+
+        # 3. BEEF functional with DFT+U (Dudarev, short-key format)
+        #    BEEF 泛函 + DFT+U（Dudarev，短键格式）
+        out = generate_inputs(
+            "bulk_relax", "Fe_bulk/POSCAR", functional="BEEF",
+            dft_u={"Fe": {"U": 4.0, "l": 2}, "Co": {"U": 3.0, "l": 2}},
+            magmom={"Fe": 5.0, "Co": 3.0},
+        )
+
+        # 4. Lobster with multiple element-specific COHP ranges
+        #    带多条元素专属 COHP 范围的 Lobster 计算
+        out = generate_inputs(
+            "lobster", "POSCAR", prev_dir="./relax",
+            cohp_generator=[
+                "from 1.5 to 2.2 type Pt type C orbitalwise",
+                "from 1.5 to 2.1 type Pt type O orbitalwise",
+            ],
+            lobsterin={"COHPstartEnergy": -20.0, "COHPendEnergy": 20.0},
+        )
+
+        # 5. Dry run — inspect merged INCAR without writing files
+        #    Dry run——在不写文件的情况下检查合并后的 INCAR
+        preview = generate_inputs("bulk_relax", "POSCAR", dry_run=True)
+        print(preview["incar"]["IBRION"])   # → 2
+        print(preview["incar"]["ENCUT"])    # → 520
     """
-    params = VaspWorkflowParams(
-        calc_type="bulk_relax",
+    # ── 0. Validate all parameters before any transformation or file I/O ───
+    _validator_validate(
+        calc_type=calc_type,
         structure=structure,
         functional=functional,
         kpoints_density=kpoints_density,
         output_dir=output_dir,
-    )
-    for k, v in kwargs.items():
-        if hasattr(params, k):
-            setattr(params, k, v)
-    return VaspAPI().run_workflow(params)["output_dir"]
-
-
-def quick_slab_relax(
-    structure: Union[str, Path],
-    functional: str = "PBE",
-    kpoints_density: float = 25.0,
-    output_dir: Optional[str] = None,
-    **kwargs
-) -> str:
-    """Run a surface slab structure relaxation and return the output directory path.
-
-    Args:
-        structure:       Path to the input structure file or directory.
-        functional:      XC functional name (default ``"PBE"``).
-        kpoints_density: K-point density (default 25.0).
-        output_dir:      Target output directory; auto-generated when ``None``.
-        **kwargs:        Additional ``VaspWorkflowParams`` fields set via
-            ``setattr``.
-
-    Returns:
-        Absolute path to the output directory as a string.
-
-    执行表面 slab 结构优化并返回输出目录路径。
-
-    参数：
-        structure:       输入结构文件或目录的路径。
-        functional:      XC 泛函名称（默认 ``"PBE"``）。
-        kpoints_density: K 点密度（默认 25.0）。
-        output_dir:      目标输出目录；为 ``None`` 时自动生成。
-        **kwargs:        通过 ``setattr`` 设置的额外 ``VaspWorkflowParams`` 字段。
-
-    返回：
-        输出目录的绝对路径字符串。
-    """
-    params = VaspWorkflowParams(
-        calc_type="slab_relax",
-        structure=structure,
-        functional=functional,
-        kpoints_density=kpoints_density,
-        output_dir=output_dir,
-    )
-    for k, v in kwargs.items():
-        if hasattr(params, k):
-            setattr(params, k, v)
-    return VaspAPI().run_workflow(params)["output_dir"]
-
-
-def quick_dos(
-    prev_dir: Union[str, Path],
-    functional: Optional[str] = None,
-    kpoints_density: float = 50.0,
-    output_dir: Optional[str] = None,
-) -> str:
-    """Run a DOS static calculation from a prior relaxation directory.
-
-    Args:
-        prev_dir:        Directory of the preceding relaxation (source of CHGCAR).
-        functional:      XC functional name; defaults to ``"PBE"`` when ``None``.
-        kpoints_density: K-point density (default 50.0).
-        output_dir:      Target output directory; auto-generated when ``None``.
-
-    Returns:
-        Absolute path to the output directory as a string.
-
-    从前序弛豫目录运行态密度静态计算。
-
-    参数：
-        prev_dir:        前序弛豫目录（CHGCAR 的来源）。
-        functional:      XC 泛函名称；为 ``None`` 时默认使用 ``"PBE"``。
-        kpoints_density: K 点密度（默认 50.0）。
-        output_dir:      目标输出目录；为 ``None`` 时自动生成。
-
-    返回：
-        输出目录的绝对路径字符串。
-    """
-    params = VaspWorkflowParams(
-        calc_type="static_dos",
-        structure=str(prev_dir),
         prev_dir=prev_dir,
-        functional=functional or "PBE",
+        incar=incar,
+        magmom=magmom,
+        dft_u=dft_u,
+        walltime=walltime,
+        ncores=ncores,
+        dry_run=dry_run,
+        # calc_type-specific params forwarded for cross-field warning checks
+        lobsterin=lobsterin,
+        cohp_generator=cohp_generator,
+        nbo_config=nbo_config,
+    )
+
+    # ── 1. Build extra INCAR dict; DFT+U adds LDAUTYPE=2 automatically ────
+    extra_incar: Dict[str, Any] = dict(incar or {})
+
+    dft_u_params: Optional[FrontendDFTPlusUParams] = None
+    if dft_u:
+        dft_u_params = FrontendDFTPlusUParams(
+            enabled=True,
+            values=_normalise_dft_u(dft_u),
+        )
+        extra_incar.setdefault("LDAUTYPE", 2)
+
+    # ── 2. MAGMOM — accept list (per-site) or dict (per-element) ──────────
+    magmom_params: Optional[FrontendMagmomParams] = None
+    if magmom is not None:
+        if isinstance(magmom, list):
+            magmom_params = FrontendMagmomParams(
+                enabled=True,
+                per_atom=[float(v) for v in magmom],
+            )
+        else:
+            magmom_params = FrontendMagmomParams(
+                enabled=True,
+                per_element={k: float(v) for k, v in magmom.items()},
+            )
+
+    # ── 3. Lobster — build overwritedict and custom lines from cohp_generator
+    lobster_params: Optional[FrontendLobsterParams] = None
+    if calc_type == "lobster":
+        overwrite: Dict[str, Any] = dict(lobsterin or {})
+        custom_lines: Optional[List[str]] = None
+        if cohp_generator is not None:
+            if isinstance(cohp_generator, str):
+                overwrite["cohpGenerator"] = cohp_generator
+            else:
+                gen_list = list(cohp_generator)
+                if gen_list:
+                    overwrite["cohpGenerator"] = gen_list[0]
+                    if len(gen_list) > 1:
+                        custom_lines = [f"cohpGenerator {g}" for g in gen_list[1:]]
+        lobster_params = FrontendLobsterParams(
+            overwritedict=overwrite if overwrite else None,
+            custom_lobsterin_lines=custom_lines,
+        )
+
+    # ── 3b. NBO config — pass raw dict through to WorkflowConfig.nbo_config ─
+    nbo_config_params: Optional[Dict[str, Any]] = dict(nbo_config) if nbo_config else None
+
+    # ── 4. Assemble VaspWorkflowParams ─────────────────────────────────────
+
+    # Set FrontendFrequencyParams so the dry_run INCAR preview reflects calc_ir tags.
+    # Without this, _get_incar_params() would not inject LEPSILON/IBRION=7 in dry_run mode.
+    # 设置 FrontendFrequencyParams 以确保 dry_run INCAR 预览正确反映 calc_ir 的标记。
+    _freq_params = (
+        FrontendFrequencyParams(calc_ir=calc_ir)
+        if calc_type in ("freq", "freq_ir")
+        else None
+    )
+
+    params = VaspWorkflowParams(
+        calc_type=calc_type,
+        structure=structure,
+        functional=functional,
         kpoints_density=kpoints_density,
         output_dir=output_dir,
+        prev_dir=prev_dir,
+        magmom=magmom_params,
+        dft_u=dft_u_params,
+        lobster=lobster_params,
+        nbo_config=nbo_config_params,
+        custom_incar=extra_incar if extra_incar else None,
+        frequency=_freq_params,
     )
-    return VaspAPI().run_workflow(params)["output_dir"]
 
+    # ── 5. Dry run: return preview dict without any file I/O ───────────────
+    if dry_run:
+        from .script_writer import ScriptWriter as _SW
+        config = params.to_workflow_config()
+        engine = WorkflowEngine()
+        incar_dict = engine._get_incar_params(config)
+        preview: Dict[str, Any] = {
+            "incar":           incar_dict,
+            "calc_type":       config.calc_type.value,
+            "functional":      config.functional,
+            "kpoints_density": config.kpoints_density,
+        }
+        if config.lobster_overwritedict:
+            preview["lobsterin"] = dict(config.lobster_overwritedict)
+        if config.lobster_custom_lines:
+            preview["lobsterin_custom_lines"] = list(config.lobster_custom_lines)
 
-def quick_md(
-    structure: Union[str, Path],
-    ensemble: str = "nvt",
-    temperature: float = 300.0,
-    nsteps: int = 1000,
-    output_dir: Optional[str] = None,
-) -> str:
-    """Run a molecular dynamics simulation and return the output directory path.
+        # 1. INCAR preview — printed first
+        if incar_dict:
+            width = max(len(k) for k in incar_dict) + 1
+            print("[dry_run] INCAR preview:")
+            for k in sorted(incar_dict):
+                print(f"  {k:<{width}}: {incar_dict[k]}")
+            print()
 
-    Args:
-        structure:   Path to the input structure file or directory.
-        ensemble:    Statistical ensemble — ``"nvt"`` or ``"npt"``.
-        temperature: Target temperature in K (isothermal run; start = end).
-        nsteps:      Total number of MD steps (NSW).
-        output_dir:  Target output directory; auto-generated when ``None``.
+        # 2. Script PBS directives — printed last
+        _SW().write(
+            output_dir=Path(output_dir or f"calc_{calc_type}"),
+            calc_type=calc_type,
+            functional=functional,
+            walltime=walltime,
+            ncores=ncores,
+            dry_run=True,
+        )
+        return preview
 
-    Returns:
-        Absolute path to the output directory as a string.
+    # ── 6. Write files ─────────────────────────────────────────────────────
+    out_dir_str: str = VaspAPI().run_workflow(params, generate_script=False)["output_dir"]
 
-    运行分子动力学模拟并返回输出目录路径。
-
-    参数：
-        structure:   输入结构文件或目录的路径。
-        ensemble:    统计系综——``"nvt"`` 或 ``"npt"``。
-        temperature: 目标温度（K），等温模拟时起始温度与终止温度相同。
-        nsteps:      MD 总步数，对应 NSW。
-        output_dir:  目标输出目录；为 ``None`` 时自动生成。
-
-    返回：
-        输出目录的绝对路径字符串。
-    """
-    params = VaspWorkflowParams(
-        calc_type=f"md_{ensemble}",
-        structure=structure,
-        md=FrontendMDParams(
-            ensemble=ensemble,
-            start_temp=temperature,
-            end_temp=temperature,
-            nsteps=nsteps,
-        ),
-        output_dir=output_dir,
+    # ── 7. Write PBS submission script ────────────────────────────────────
+    from .script_writer import ScriptWriter as _SW
+    _SW().write(
+        output_dir=Path(out_dir_str),
+        calc_type=calc_type,
+        functional=functional,
+        walltime=walltime,
+        ncores=ncores,
     )
-    return VaspAPI().run_workflow(params)["output_dir"]
+
+    return out_dir_str
+
+

@@ -71,6 +71,24 @@ FUNCTIONAL_INCAR_PATCHES: Dict[str, Dict[str, Any]] = {
 # 保留此别名以维持 input_sets.py 的向后兼容性。
 BEEF_INCAR_SETTINGS: Dict[str, Any] = FUNCTIONAL_INCAR_PATCHES["BEEF"]
 
+# ---------------------------------------------------------------------------
+# Complete list of functionals the package accepts.
+# Distinction from FUNCTIONAL_INCAR_PATCHES:
+#   FUNCTIONAL_INCAR_PATCHES  — functionals that carry special INCAR overrides.
+#   SUPPORTED_FUNCTIONALS     — all functionals accepted as input, including those
+#                               that pass through unchanged (no patch needed).
+# 完整的受支持泛函列表。
+# 与 FUNCTIONAL_INCAR_PATCHES 的区别：
+#   FUNCTIONAL_INCAR_PATCHES  — 有专属 INCAR 覆盖补丁的泛函。
+#   SUPPORTED_FUNCTIONALS     — 所有被接受的泛函（包含无需补丁的标准泛函）。
+# ---------------------------------------------------------------------------
+SUPPORTED_FUNCTIONALS: frozenset = frozenset({
+    "PBE", "RPBE", "LDA", "PBEsol",   # standard GGA/LDA
+    "BEEF", "BEEFVTST",                # vdW-DF
+    "SCAN", "r2SCAN",                  # meta-GGA
+    "HSE", "PBE0",                     # hybrid
+})
+
 
 # ---------------------------------------------------------------------------
 # Default INCAR parameters per calculation type

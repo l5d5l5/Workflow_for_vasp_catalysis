@@ -246,8 +246,11 @@ class VaspInputMaker:
         mag_list: List[float] = []
 
         if isinstance(magmom_val, dict):
-            # Already in the required format; pass through unchanged.
-            # 已经是所需格式；直接传递，不做修改。
+            # Per-element dict is already in the format pymatgen expects.
+            # sets.py:577 calls .get(site.species_string) on
+            # user_incar_settings["MAGMOM"], so it must remain a dict.
+            # 逐元素字典已是 pymatgen 所期望的格式。
+            # sets.py:577 对该值调用 .get(site.species_string)——必须保持字典形式。
             return structure
         elif isinstance(magmom_val, str):
             # Parse VASP-style "n*val" tokens (e.g. "3*0.6 1*5.0").
@@ -279,23 +282,28 @@ class VaspInputMaker:
             return structure
 
         if len(mag_list) == len(structure):
-            # Attach per-atom values as a site property when lengths agree.
-            # 当长度一致时，将逐原子值作为站点属性附加。
+            # Attach per-atom values as a site property when lengths agree so
+            # that pymatgen's InputSet can also generate the correct MAGMOM tag
+            # from the structure itself (belt-and-suspenders approach).
+            # 当长度一致时将逐原子值作为站点属性附加，让 pymatgen InputSet
+            # 也能从结构本身生成正确的 MAGMOM 标记（双重保险）。
             try:
                 structure = structure.copy()
                 structure.add_site_property("magmom", mag_list)
             except Exception as exc:
-                logger.warning("为结构附加每原子 MAGMOM 失败，将按元素平均: %s", exc)
+                logger.warning("为结构附加每原子 MAGMOM 失败: %s", exc)
 
-        # Build per-element averaged dict from the flat mag_list.
-        # 从扁平 mag_list 构建按元素平均的字典。
+        # Build a per-element averaged dict for pymatgen compatibility.
+        # pymatgen sets.py:577 calls .get(site.species_string) on
+        # user_incar_settings["MAGMOM"], so it must be Dict[str, float].
+        # A flat List[float] raises AttributeError at that site.
+        # 构建按元素平均的字典以兼容 pymatgen。
+        # sets.py:577 对 user_incar_settings["MAGMOM"] 调用 .get(site.species_string)，
+        # 因此必须是 Dict[str, float]；List[float] 会在该行引发 AttributeError。
         per_elem: Dict[str, List[float]] = {}
         for idx, site in enumerate(structure):
-            # Use the last known value when the list is shorter than the structure.
-            # 当列表比结构短时使用最后一个已知值。
             val = mag_list[idx] if idx < len(mag_list) else mag_list[-1]
             per_elem.setdefault(site.species_string, []).append(val)
-
         incar["MAGMOM"] = {k: sum(v) / len(v) for k, v in per_elem.items()}
         return structure
 
@@ -663,17 +671,37 @@ class VaspInputMaker:
             except Exception:
                 structure_for_mag = None
 
-        common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
-        structure_for_mag = self._apply_magmom_compat(structure_for_mag, common_kwargs) or structure_for_mag
+        merged_incar: Dict[str, Any] = self.user_incar_settings.copy()
+        if user_incar_settings:
+            merged_incar.update(user_incar_settings)
+        merged_kpoints = (
+            user_kpoints_settings
+            if user_kpoints_settings is not None
+            else self.user_kpoints_settings
+        )
 
-        # Detect whether start or end was supplied as an existing directory.
-        # 检测 start 或 end 是否作为已有目录传入。
-        is_start_dir = isinstance(start_structure, (str, Path)) and Path(start_structure).is_dir()
-        is_end_dir = isinstance(end_structure, (str, Path)) and Path(end_structure).is_dir()
+        # Apply MAGMOM normalisation against the merged incar dict.
+        # 对合并后的 incar 做 MAGMOM 规范化。
+        _mag_kwargs = {"user_incar_settings": merged_incar}
+        if structure_for_mag is not None:
+            structure_for_mag = (
+                self._apply_magmom_compat(structure_for_mag, _mag_kwargs)
+                or structure_for_mag
+            )
+            merged_incar = _mag_kwargs["user_incar_settings"]
+        
+        # ── 检测 start/end 是否为已有目录 ────────────────────────────────
+        is_start_dir = (
+            isinstance(start_structure, (str, Path))
+            and Path(start_structure).is_dir()
+        )
+        is_end_dir = (
+            isinstance(end_structure, (str, Path))
+            and Path(end_structure).is_dir()
+        )
 
         if is_start_dir or is_end_dir:
-            # Prefer start_dir as the reference for inheriting prior-calc settings.
-            # 优先使用 start_dir 作为继承前序计算设置的参考。
+            # 从前序计算目录继承 INCAR/KPOINTS 设置
             prev_dir = start_structure if is_start_dir else end_structure
             input_obj = NEBSetEcat.from_prev_calc(
                 prev_dir=prev_dir,
@@ -681,7 +709,8 @@ class VaspInputMaker:
                 end_structure=end_structure,
                 n_images=n_images,
                 use_idpp=use_idpp,
-                **common_kwargs
+                user_incar_settings=merged_incar,
+                user_kpoints_settings=merged_kpoints,
             )
         else:
             input_obj = NEBSetEcat(
@@ -690,11 +719,13 @@ class VaspInputMaker:
                 n_images=n_images,
                 use_idpp=use_idpp,
                 intermediate_structures=intermediate_structures,
-                **common_kwargs
+                user_incar_settings=merged_incar,
+                user_kpoints_settings=merged_kpoints,
             )
+
         input_obj.write_input(output_dir)
         return str(output_dir)
-
+    
     def write_lobster(
         self,
         output_dir: Union[str, Path],
@@ -881,7 +912,7 @@ class VaspInputMaker:
     def write_freq(
         self,
         output_dir: Union[str, Path],
-        prev_dir: Union[str, Path],
+        prev_dir: Optional[Union[str, Path]] = None,
         structure: Union[str, Structure, Path, None] = None,
         mode: str = "inherit",
         vibrate_indices: Optional[List[int]] = None,
@@ -909,10 +940,13 @@ class VaspInputMaker:
 
         Args:
             output_dir: Directory where the input files will be written.
-            prev_dir: Previous relaxation directory; used to inherit INCAR
-                settings and (optionally) to read the final CONTCAR.
-            structure: Override structure.  When ``None``, CONTCAR from
-                ``prev_dir`` is used.
+            prev_dir: Previous relaxation directory.  When provided, INCAR
+                settings (ENCUT, EDIFF, etc.) are inherited and the final
+                CONTCAR is used as the structure source if ``structure`` is
+                ``None``.  When ``None``, workflow defaults are used and
+                ``structure`` must be supplied explicitly.
+            structure: Override structure.  When ``None`` and ``prev_dir`` is
+                set, CONTCAR from ``prev_dir`` is used.
             mode: Vibration mode selector.  One of ``"inherit"`` (keep
                 existing selective dynamics), ``"all"`` (remove selective
                 dynamics so all atoms vibrate).
@@ -932,8 +966,9 @@ class VaspInputMaker:
             Absolute path string of the output directory.
 
         Raises:
-            FileNotFoundError: If ``structure`` is ``None`` and no CONTCAR
-                exists in ``prev_dir``.
+            FileNotFoundError: If ``structure`` is ``None``, ``prev_dir`` is
+                set, and no CONTCAR exists in ``prev_dir``.
+            ValueError: If both ``structure`` and ``prev_dir`` are ``None``.
             ValueError: If ``mode`` is not one of the accepted values.
 
         写出振动频率计算的 VASP 输入文件。
@@ -951,9 +986,11 @@ class VaspInputMaker:
 
         Args:
             output_dir: 输入文件写入的目录。
-            prev_dir: 前序弛豫目录；用于继承 INCAR 设置以及（可选）读取最终
-                CONTCAR。
-            structure: 覆盖结构。为 ``None`` 时使用 ``prev_dir`` 中的 CONTCAR。
+            prev_dir: 前序弛豫目录。提供时继承 INCAR 设置（ENCUT、EDIFF 等），
+                并在 ``structure`` 为 ``None`` 时以 CONTCAR 为结构来源。
+                为 ``None`` 时使用工作流默认参数，此时必须显式提供 ``structure``。
+            structure: 覆盖结构。为 ``None`` 且已设置 ``prev_dir`` 时，
+                使用 ``prev_dir`` 中的 CONTCAR。
             mode: 振动模式选择器。可选 ``"inherit"``（保留现有选择性动力学）
                 或 ``"all"``（移除选择性动力学使所有原子振动）。
             vibrate_indices: 显式设为自由的零基原子索引；覆盖 ``mode`` 和
@@ -971,27 +1008,33 @@ class VaspInputMaker:
             输出目录的绝对路径字符串。
 
         Raises:
-            FileNotFoundError: 若 ``structure`` 为 ``None`` 且 ``prev_dir`` 中
-                不存在 CONTCAR。
+            FileNotFoundError: 若 ``structure`` 为 ``None``、``prev_dir`` 已设置
+                但其中不存在 CONTCAR。
+            ValueError: 若 ``structure`` 和 ``prev_dir`` 均为 ``None``。
             ValueError: 若 ``mode`` 不是接受的值之一。
         """
         output_dir = self._ensure_dir(output_dir)
-        prev_dir_path = Path(prev_dir).resolve()
+        prev_dir_path = Path(prev_dir).resolve() if prev_dir is not None else None
 
         if structure is not None:
-            # Use caller-supplied structure directly.
-            # 直接使用调用者提供的结构。
+            # Use caller-supplied structure directly (file or directory — load_structure
+            # handles directory resolution the same way as write_bulk/write_slab).
+            # 直接使用调用者提供的结构；load_structure 支持目录路径，与 write_bulk/write_slab 行为一致。
             if isinstance(structure, Structure):
                 final_structure = structure.copy()
             else:
-                final_structure = Structure.from_file(structure)
-        else:
+                final_structure = load_structure(structure)
+        elif prev_dir_path is not None:
             # Fall back to the relaxed CONTCAR from prev_dir.
             # 回退到 prev_dir 中的弛豫 CONTCAR。
             contcar_path = prev_dir_path / "CONTCAR"
             if not contcar_path.exists():
                 raise FileNotFoundError(f"CONTCAR not found in {prev_dir_path}")
             final_structure = Structure.from_file(contcar_path)
+        else:
+            raise ValueError(
+                "Either 'structure' or 'prev_dir' must be provided to write_freq()."
+            )
 
         final_vibrate_indices: Optional[List[int]] = None
 
@@ -1028,13 +1071,28 @@ class VaspInputMaker:
         common_kwargs = self._build_common_kwargs(user_incar_settings, user_kpoints_settings)
         final_structure = self._apply_magmom_compat(final_structure, common_kwargs) or final_structure
 
-        input_set = FreqSetEcat.from_prev_calc_ecat(
-            prev_dir=prev_dir_path,
-            structure=final_structure,
-            vibrate_indices=final_vibrate_indices,
-            calc_ir=calc_ir,
-            **common_kwargs
-        )
+        if prev_dir_path is not None:
+            input_set = FreqSetEcat.from_prev_calc_ecat(
+                prev_dir=prev_dir_path,
+                structure=final_structure,
+                vibrate_indices=final_vibrate_indices,
+                calc_ir=calc_ir,
+                **common_kwargs
+            )
+        else:
+            # No prev_dir: apply vibrate_indices directly to the structure before
+            # constructing the set from scratch with workflow defaults.
+            # 无 prev_dir：在用工作流默认参数构建输入集前，直接将 vibrate_indices 应用到结构上。
+            if final_vibrate_indices is not None:
+                final_structure = FreqSetEcat._apply_vibrate_indices(
+                    final_structure, final_vibrate_indices
+                )
+            input_set = FreqSetEcat(
+                structure=final_structure,
+                functional=self.functional,
+                calc_ir=calc_ir,
+                **common_kwargs
+            )
         input_set.write_input(output_dir)
         return str(output_dir)
 

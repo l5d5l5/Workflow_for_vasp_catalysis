@@ -38,6 +38,8 @@ Extension points — where to touch this file when adding a new stage
 """
 
 import logging
+import os
+import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -54,43 +56,16 @@ from .constants import (
     INCAR_DELTA_STATIC_DOS,
     INCAR_DELTA_STATIC_CHG,
     INCAR_DELTA_STATIC_ELF,
+    FUNCTIONAL_INCAR_PATCHES,
 )
+from .calc_type import CalcType
 from .maker import VaspInputMaker
 from .script import CalcCategory, Script
 from .utils import load_structure
+from .validator import validate as _validator_validate, ValidationError
 
 logger = logging.getLogger(__name__)
 
-
-class CalcType(Enum):
-    """标准化计算类型枚举 - 用户唯一需要选择的参数"""
-    # === 结构优化类 ===
-    BULK_RELAX = "bulk_relax"           # 体相结构优化
-    SLAB_RELAX = "slab_relax"           # 表面 slab 优化
-    
-    # === 电子结构计算类 ===
-    STATIC_SP = "static_sp"             # 单点能计算（静态）
-    DOS_SP = "static_dos"               # 静态 + DOS
-    CHG_SP = "static_charge_density"    # 静态 + 电荷密度
-    ELF_SP = "static_elf"               # 静态 + 电子局域函数
-    
-    # === 过渡态搜索类 ===
-    NEB = "neb"                         # NEB 过渡态搜索
-    DIMER = "dimer"                     # Dimer 方法（需先 NEB）
-    
-    # === 频率计算类 ===
-    FREQ = "frequency"                  # 频率计算（声子）
-    FREQ_IR = "frequency_ir"            # 频率 + 红外（介电常数）
-    
-    # === 性质分析类 ===
-    LOBSTER = "lobster"                 # LOBSTER 基态分析
-    NMR_CS = "nmr_cs"                   # NMR 化学位移
-    NMR_EFG = "nmr_efg"                 # NMR 电场梯度
-    NBO = "nbo"                         # NBO 分析
-    
-    # === 分子动力学类 ===
-    MD_NVT = "md_nvt"                   # NVT 分子动力学
-    MD_NPT = "md_npt"                   # NPT 分子动力学
 
 
 @dataclass(frozen=True)
@@ -100,7 +75,6 @@ class CalcTypeConfig:
     incar_delta: Dict[str, Any] = field(default_factory=dict)
     need_wavecharge: bool = False
     need_vtst: bool = False
-    beef_compatible: bool = True
     script_category: CalcCategory = CalcCategory.RELAX
 
     def get_merged_incar(self, user_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -182,42 +156,64 @@ CALC_TYPE_REGISTRY: Dict[CalcType, CalcTypeConfig] = {
     CalcType.LOBSTER: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_LOBSTER,
         need_wavecharge=True,
-        beef_compatible=False,
         script_category=CalcCategory.LOBSTER,
     ),
     CalcType.NMR_CS: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_NMR_CS,
-        beef_compatible=False,
         script_category=CalcCategory.NMR,
     ),
     CalcType.NMR_EFG: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_NMR_EFG,
-        beef_compatible=False,
         script_category=CalcCategory.NMR,
     ),
     CalcType.NBO: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_NBO,
         need_wavecharge=True,
-        beef_compatible=False,
         script_category=CalcCategory.NBO,
     ),
     # 分子动力学
     CalcType.MD_NVT: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_MD,
         need_wavecharge=True,
-        beef_compatible=False,
         script_category=CalcCategory.MD,
     ),
     CalcType.MD_NPT: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_MD_NPT,
         need_wavecharge=True,
-        beef_compatible=False,
         script_category=CalcCategory.MD,
     ),
 }
 
 # 需要 vdw_kernel.bindat 的泛函
 _VDW_NEEDED: set[str] = {"BEEF", "BEEFVTST"}
+
+_CALC_TYPE_STR_MAP: Dict[str, CalcType] = {
+    "bulk_relax":    CalcType.BULK_RELAX,
+    "slab_relax":    CalcType.SLAB_RELAX,
+    "static_sp":     CalcType.STATIC_SP,
+    "static_dos":    CalcType.DOS_SP,
+    "dos":           CalcType.DOS_SP,
+    "static_charge": CalcType.CHG_SP,
+    "static_elf":    CalcType.ELF_SP,
+    "neb":           CalcType.NEB,
+    "dimer":         CalcType.DIMER,
+    "freq":          CalcType.FREQ,
+    "freq_ir":       CalcType.FREQ_IR,
+    "lobster":       CalcType.LOBSTER,
+    "nmr_cs":        CalcType.NMR_CS,
+    "nmr_efg":       CalcType.NMR_EFG,
+    "nbo":           CalcType.NBO,
+    "md_nvt":        CalcType.MD_NVT,
+    "md_npt":        CalcType.MD_NPT,
+}
+
+# ── CalcType → 前端字符串映射（用于自动生成输出目录名）──────────────────────
+CALC_TYPE_FRONTEND_NAME: Dict[CalcType, str] = {
+    v: k for k, v in _CALC_TYPE_STR_MAP.items()
+    if k not in ("static_dos", "dos")  # 去重：DOS_SP 优先用 "static_dos"
+}
+# 手动修正去重后的别名
+CALC_TYPE_FRONTEND_NAME[CalcType.DOS_SP] = "static_dos"
 
 
 @dataclass
@@ -255,7 +251,7 @@ class WorkflowConfig:
     """
     # === 核心配置 ===
     calc_type: CalcType                                    # 计算类型（必选）
-    structure: Union[str, Path, Structure]                  # 输入结构（必选）
+    structure: Optional[Union[str, Path, Structure]] = None  # 输入结构（neb/dimer 可为 None）
     
     # === 功能参数（前端暴露）===
     functional: str = "PBE"                                # 泛函，默认 PBE
@@ -292,12 +288,30 @@ class WorkflowConfig:
     lobster_overwritedict: Optional[Dict[str, Any]] = None
     lobster_custom_lines: Optional[List[str]] = None
 
-    # === 高级覆盖（谨慎使用）===
+    # === 高级覆盖 ===
     user_incar_overrides: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
+        # ── calc_type：接受字符串，自动转换为 CalcType 枚举 ──────────────────
+        if isinstance(self.calc_type, str):
+            key = self.calc_type.lower().strip()
+            if key not in _CALC_TYPE_STR_MAP:
+                valid = ", ".join(f'"{k}"' for k in sorted(_CALC_TYPE_STR_MAP))
+                raise ValueError(
+                    f"Unknown calc_type string '{self.calc_type}'. "
+                    f"Valid options: {valid}"
+                )
+            self.calc_type = _CALC_TYPE_STR_MAP[key]
+
+        # ── functional：统一大写 ─────────────────────────────────────────────
         self.functional = self.functional.upper()
+
+        # ── output_dir：统一转为 Path ────────────────────────────────────────
         self.output_dir = Path(self.output_dir) if self.output_dir else None
+
+        # ── user_incar_overrides：确保不为 None ──────────────────────────────
+        if self.user_incar_overrides is None:
+            self.user_incar_overrides = {}
     
     def auto_detect_prev_dir(self) -> Optional[Path]:
         """
@@ -324,55 +338,6 @@ class WorkflowConfig:
         
         return None
     
-    def validate(self) -> List[str]:
-        """
-        验证配置完整性，返回错误列表。
-
-        注意：仅验证路径存在性和基本参数有效性，
-        不执行实际的结构加载（由 maker.write_*() 统一处理，避免重复 I/O）。
-        """
-        errors = []
-
-        # 验证结构路径存在（不加载内容，由 maker 层统一加载）
-        if isinstance(self.structure, (str, Path)):
-            structure_path = Path(self.structure)
-            if structure_path.is_dir():
-                # 如果是目录，检查 CONTCAR 或 POSCAR
-                if not ((structure_path / "CONTCAR").exists() or (structure_path / "POSCAR").exists()):
-                    errors.append(f"结构目录 {structure_path} 中没有 CONTCAR 或 POSCAR")
-            elif not structure_path.exists():
-                errors.append(f"结构文件不存在: {structure_path}")
-        elif not isinstance(self.structure, Structure):
-            errors.append(f"structure 类型无效: {type(self.structure)}")
-
-        # 验证 NEB 需要 start/end 结构
-        if self.calc_type == CalcType.NEB:
-            if not self.start_structure or not self.end_structure:
-                errors.append(f"计算类型 {self.calc_type.value} 需要提供 start_structure 和 end_structure")
-
-            # 验证 start/end 结构路径
-            for name, struct in [("start_structure", self.start_structure),
-                                  ("end_structure", self.end_structure)]:
-                if struct:
-                    path = Path(struct) if isinstance(struct, (str, Path)) else None
-                    if path and path.is_dir():
-                        if not ((path / "CONTCAR").exists() or (path / "POSCAR").exists()):
-                            errors.append(f"{name} 目录 {path} 中没有 CONTCAR 或 POSCAR")
-                    elif path and not path.exists():
-                        errors.append(f"{name} 文件不存在: {path}")
-
-        # 验证泛函兼容性
-        if "BEEF" in self.functional and not CALC_TYPE_REGISTRY[self.calc_type].beef_compatible:
-            errors.append(f"泛函 {self.functional} 不适用于计算类型 {self.calc_type.value}")
-
-        # 验证 prev_dir
-        detected_prev = self.auto_detect_prev_dir()
-        if detected_prev and not (detected_prev / "INCAR").exists():
-            errors.append(f"前序目录 {detected_prev} 中没有 INCAR 文件")
-
-        return errors
-
-
 class WorkflowEngine:
     """
     工作流引擎 - 执行标准化工作流
@@ -419,15 +384,52 @@ class WorkflowEngine:
 
         1. ``CALC_TYPE_REGISTRY[calc_type].incar_base``  — type-specific defaults
         2. ``CALC_TYPE_REGISTRY[calc_type].incar_delta`` — static increments
-        3. ``config.user_incar_overrides``               — user-supplied overrides
+        3. ``FUNCTIONAL_INCAR_PATCHES[functional]``      — functional-specific tags
+           (e.g. GGA/LUSE_VDW/AGGAC/LASPH for BEEF, METAGGA/ADDGRID for SCAN,
+           LHFCALC/AEXX/HFSCREEN for HSE)
+        4. ``config.user_incar_overrides``               — user-supplied overrides
+           (always wins; user can still override any functional-level default)
+
+        Note: when ``prev_dir`` is set, INCAR/KPOINTS inheritance from the
+        previous calculation is handled inside the relevant ``InputSet``
+        ``from_prev_calc_ecat()`` class methods (``MPStaticSetEcat``,
+        ``FreqSetEcat``, ``LobsterSetEcat``, …) in ``flow/input_sets.py``.
+        Those methods merge the inherited INCAR with calc-type-specific deltas
+        (e.g. ``DEFAULT_INCAR_STATIC`` on top of the relax INCAR), then apply
+        ``user_incar_overrides`` as the final layer.  This function therefore
+        does NOT additionally read ``prev_dir/INCAR`` — doing so would put the
+        full relax INCAR into ``user_incar_settings``, overriding the static
+        defaults (IBRION, NSW, …) that ``from_prev_calc_ecat`` correctly sets.
+
+        Side effect: when MAGMOM is present in the merged result, ISPIN=2 is
+        injected automatically unless the user already supplied ISPIN explicitly.
 
         The result is passed as ``user_incar_settings`` to ``VaspInputMaker``,
         which forwards it to the pymatgen ``InputSet`` as the final INCAR overlay.
+
+        按优先级（从低到高）合并 INCAR 参数：
+
+        1. ``CALC_TYPE_REGISTRY[calc_type].incar_base``  — 计算类型专属默认值
+        2. ``CALC_TYPE_REGISTRY[calc_type].incar_delta`` — 静态增量覆盖
+        3. ``FUNCTIONAL_INCAR_PATCHES[functional]``      — 泛函专属标记
+        4. ``config.user_incar_overrides``               — 用户覆盖（始终最高优先级）
+
+        注意：设置了 ``prev_dir`` 时，INCAR/KPOINTS 继承由各 ``InputSet`` 的
+        ``from_prev_calc_ecat()`` 类方法在 ``flow/input_sets.py`` 内部处理，
+        本函数不额外读取 ``prev_dir/INCAR``。
+
+        副作用：若合并结果中存在 MAGMOM，且用户未显式设置 ISPIN，则自动注入 ISPIN=2。
         """
         ct_cfg = CALC_TYPE_REGISTRY.get(config.calc_type)
-        if ct_cfg is None:
-            return dict(config.user_incar_overrides)
-        return ct_cfg.get_merged_incar(config.user_incar_overrides)
+        base = ct_cfg.get_merged_incar({}) if ct_cfg is not None else {}
+        func_patch = FUNCTIONAL_INCAR_PATCHES.get(config.functional, {})
+        merged: Dict[str, Any] = {**base, **func_patch, **config.user_incar_overrides}
+        # Auto-inject ISPIN=2 when MAGMOM is present and the user has not
+        # explicitly set ISPIN.  VASP silently ignores MAGMOM when ISPIN=1.
+        # 当 MAGMOM 存在且用户未显式设置 ISPIN 时自动注入 ISPIN=2。
+        if "MAGMOM" in merged and "ISPIN" not in config.user_incar_overrides:
+            merged.setdefault("ISPIN", 2)
+        return merged
 
     def _get_script_context(self, config: WorkflowConfig) -> Dict[str, Any]:
         """生成脚本渲染上下文。"""
@@ -444,6 +446,89 @@ class WorkflowEngine:
             "need_vdw": any(v in config.functional for v in _VDW_NEEDED),
         }
     
+    def _copy_vdw_kernel(self, output_dir: Path) -> None:
+        """Copy ``vdw_kernel.bindat`` into *output_dir* for vdW functionals.
+
+        The source path is read from the ``FLOW_VDW_KERNEL`` environment
+        variable.  Raises ``FileNotFoundError`` with a clear message when the
+        variable is unset or points to a non-existent file — so the user knows
+        exactly what to fix before the VASP job is submitted.
+
+        将 ``vdw_kernel.bindat`` 复制到 *output_dir*（用于需要 vdW 核文件的泛函）。
+
+        源路径从环境变量 ``FLOW_VDW_KERNEL`` 读取。若该变量未设置或指向不存在的
+        文件，抛出 ``FileNotFoundError`` 并给出明确的错误说明。
+        """
+        vdw_env = os.environ.get("FLOW_VDW_KERNEL", "").strip()
+        if not vdw_env:
+            raise FileNotFoundError(
+                "BEEF/BEEFVTST functional requires vdw_kernel.bindat in the "
+                "output directory, but the FLOW_VDW_KERNEL environment variable "
+                "is not set.  Please run:\n"
+                "  export FLOW_VDW_KERNEL=/absolute/path/to/vdw_kernel.bindat\n"
+                "BEEF/BEEFVTST 泛函需要 vdw_kernel.bindat，但环境变量 "
+                "FLOW_VDW_KERNEL 未设置。请执行上述 export 命令后重试。"
+            )
+        src = Path(vdw_env)
+        if not src.is_file():
+            raise FileNotFoundError(
+                f"vdw_kernel.bindat not found at '{src}' "
+                f"(FLOW_VDW_KERNEL={vdw_env}).\n"
+                f"vdw_kernel.bindat 在 '{src}' 处不存在，请检查 FLOW_VDW_KERNEL 路径。"
+            )
+        dest = output_dir / "vdw_kernel.bindat"
+        shutil.copy2(src, dest)
+        logger.info("Copied vdw_kernel.bindat → %s", dest)
+
+    def _copy_prev_wavecharge(
+        self,
+        prev_dir: Path,
+        output_dir: Path,
+        user_incar_overrides: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Copy WAVECAR and/or CHGCAR from *prev_dir* into *output_dir*.
+
+        Files are only copied when they exist and are non-empty.  Missing or
+        empty files are silently skipped — the workflow proceeds normally.
+
+        Returns a dict of INCAR tags to add (``ICHARG=1`` when CHGCAR is
+        copied, ``ISTART=1`` when only WAVECAR is copied).  Tags already
+        present in *user_incar_overrides* are **not** included in the return
+        value so the user's explicit settings always take highest priority.
+
+        将 WAVECAR 和/或 CHGCAR 从 *prev_dir* 复制到 *output_dir*。
+
+        仅在文件存在且非空时复制；缺失或空文件静默跳过，工作流继续正常运行。
+
+        返回需追加的 INCAR 标记字典：复制了 CHGCAR 时返回 ``ICHARG=1``，
+        仅复制了 WAVECAR 时返回 ``ISTART=1``。若用户在 *user_incar_overrides*
+        中已显式设置这些标记，则不覆盖（用户值始终优先）。
+        """
+        incar_additions: Dict[str, Any] = {}
+
+        chgcar = prev_dir / "CHGCAR"
+        wavecar = prev_dir / "WAVECAR"
+
+        chgcar_copied = False
+        wavecar_copied = False
+
+        if chgcar.is_file() and chgcar.stat().st_size > 0:
+            shutil.copy2(chgcar, output_dir / "CHGCAR")
+            chgcar_copied = True
+            logger.info("Copied CHGCAR from %s → %s", prev_dir, output_dir)
+
+        if wavecar.is_file() and wavecar.stat().st_size > 0:
+            shutil.copy2(wavecar, output_dir / "WAVECAR")
+            wavecar_copied = True
+            logger.info("Copied WAVECAR from %s → %s", prev_dir, output_dir)
+
+        if chgcar_copied and "ICHARG" not in user_incar_overrides:
+            incar_additions["ICHARG"] = 1
+        elif wavecar_copied and "ISTART" not in user_incar_overrides:
+            incar_additions["ISTART"] = 1
+
+        return incar_additions
+
     def run(self, config: WorkflowConfig) -> str:
         """Write VASP input files for *config* to ``config.output_dir``.
 
@@ -451,11 +536,12 @@ class WorkflowEngine:
         -----
         1. Auto-detect ``prev_dir`` if not supplied.
         2. Validate ``config`` (raises ``ValueError`` on bad params).
-        3. Build a fresh ``VaspInputMaker`` with the merged INCAR params from
-           ``CALC_TYPE_REGISTRY`` + ``config.user_incar_overrides``.
-        4. Dispatch to the correct ``maker.write_*()`` via a ``match`` statement.
-           Each arm passes calc-type-specific parameters (``vibrate_indices``,
-           ``nbo_config``, ``lobster_overwritedict``, …).
+        3. Resolve structure from ``prev_dir`` when the explicit path is absent.
+        4. Pre-check ``prev_dir`` for WAVECAR/CHGCAR; append ICHARG/ISTART tags.
+        5. Build a fresh ``VaspInputMaker`` with the merged INCAR params.
+        6. Dispatch to the correct ``maker.write_*()`` via a ``match`` statement.
+        7. Copy WAVECAR/CHGCAR from ``prev_dir`` into the output directory.
+        8. Copy ``vdw_kernel.bindat`` if a vdW functional is used.
 
         To add a new calc type, add a ``case CalcType.NEW_TYPE:`` arm here that
         calls the appropriate ``VaspInputMaker`` method with any required
@@ -467,29 +553,133 @@ class WorkflowEngine:
         # 1. 自动检测 prev_dir
         if config.prev_dir is None:
             config.prev_dir = config.auto_detect_prev_dir()
-        
+
+        prev = Path(config.prev_dir).resolve() if config.prev_dir else None
+
         # 2. 验证配置
-        errors = config.validate()
-        if errors:
-            raise ValueError("配置验证失败:\n" + "\n".join(f"  - {e}" for e in errors))
+        try:
+            _validator_validate(
+                calc_type=config.calc_type.value,
+                structure=config.structure,
+                functional=config.functional,
+                kpoints_density=config.kpoints_density,
+                output_dir=config.output_dir,
+                prev_dir=config.prev_dir,
+                incar=config.user_incar_overrides or None,
+                # NEB 专用字段通过 **extra 传入
+                start_structure=config.start_structure,
+                end_structure=config.end_structure,
+                neb_images=None,  # WorkflowConfig 不直接暴露 neb_images 列表
+            )
+        except ValidationError as exc:
+            # 将 ValidationError 转为 ValueError 保持 run() 原有异常类型契约
+            raise ValueError("配置验证失败:\n" + "\n".join(f"  - {e}" for e in exc.errors)) from exc
         
-        # 3. 确定输出目录
+        # 3. 解析 structure 为具体的文件路径
+        #
+        # 优先级：
+        #   a) structure 是存在的文件            → 直接使用
+        #   b) structure 是目录                  → 从目录取 CONTCAR（非空）或 POSCAR
+        #   c) structure 文件不存在 / 为 None     → 从 prev_dir 取 CONTCAR（非空）或 POSCAR
+        struct = config.structure
+
+        if isinstance(struct, (str, Path)):
+            struct_path = Path(struct)
+
+            if struct_path.is_file():
+                # 文件存在，直接使用，无需任何处理
+                pass
+
+            elif struct_path.is_dir():
+                # structure 本身是目录，从中解析 CONTCAR/POSCAR
+                contcar = struct_path / "CONTCAR"
+                poscar  = struct_path / "POSCAR"
+                if contcar.is_file() and contcar.stat().st_size > 0:
+                    struct = contcar
+                    logger.info(
+                        "Structure '%s' is a directory; using CONTCAR: %s",
+                        config.structure, contcar,
+                    )
+                elif poscar.is_file():
+                    struct = poscar
+                    logger.info(
+                        "Structure '%s' is a directory; using POSCAR: %s",
+                        config.structure, poscar,
+                    )
+                else:
+                    raise ValueError(
+                        f"Structure path '{config.structure}' is a directory but "
+                        "contains neither CONTCAR nor POSCAR."
+                    )
+
+            else:
+                # 路径不存在，尝试从 prev_dir 取
+                if prev is not None:
+                    contcar = prev / "CONTCAR"
+                    poscar_fallback = prev / "POSCAR"
+                    if contcar.is_file() and contcar.stat().st_size > 0:
+                        struct = contcar
+                        logger.info(
+                            "Structure '%s' not found; using CONTCAR from prev_dir: %s",
+                            config.structure, contcar,
+                        )
+                    elif poscar_fallback.is_file():
+                        struct = poscar_fallback
+                        logger.info(
+                            "Structure '%s' not found; using POSCAR from prev_dir: %s",
+                            config.structure, poscar_fallback,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Structure file '{config.structure}' not found and "
+                            f"prev_dir '{prev}' contains neither CONTCAR nor POSCAR."
+                        )
+                # else: structure 不存在且无 prev_dir → validator 已拦截，不会到达此处
+
+        elif struct is None:
+            # structure=None，完全依赖 prev_dir
+            if prev is not None:
+                contcar = prev / "CONTCAR"
+                poscar_fallback = prev / "POSCAR"
+                if contcar.is_file() and contcar.stat().st_size > 0:
+                    struct = contcar
+                    logger.info("structure=None; using CONTCAR from prev_dir: %s", contcar)
+                elif poscar_fallback.is_file():
+                    struct = poscar_fallback
+                    logger.info("structure=None; using POSCAR from prev_dir: %s", poscar_fallback)
+                else:
+                    raise ValueError(
+                        f"structure is None and prev_dir '{prev}' contains "
+                        "neither CONTCAR nor POSCAR."
+                    )
+
+        # 4. 确定输出目录
         output_dir = config.output_dir
         if output_dir is None:
             output_dir = Path.cwd() / f"calc_{config.calc_type.value}"
         output_dir = Path(output_dir).resolve()
-        
-        # 4. 生成输入文件
+
+        # 5. Pre-check prev_dir for WAVECAR/CHGCAR.
+        wavecharge_incar: Dict[str, Any] = {}
+        if prev is not None:
+            chgcar = prev / "CHGCAR"
+            wavecar = prev / "WAVECAR"
+            chgcar_avail = chgcar.is_file() and chgcar.stat().st_size > 0
+            wavecar_avail = wavecar.is_file() and wavecar.stat().st_size > 0
+            if chgcar_avail and "ICHARG" not in config.user_incar_overrides:
+                wavecharge_incar["ICHARG"] = 1
+            elif wavecar_avail and "ISTART" not in config.user_incar_overrides:
+                wavecharge_incar["ISTART"] = 1
+
+        # 6. 生成输入文件
         # 使用 replace() 创建每次调用独立的副本，避免 self.maker 状态污染
+        incar_params = {**self._get_incar_params(config), **wavecharge_incar}
         maker = replace(
             self.maker,
             functional=config.functional,
             kpoints_density=config.kpoints_density,
-            user_incar_settings=self._get_incar_params(config),
+            user_incar_settings=incar_params,
         )
-
-        struct = config.structure
-        prev = config.prev_dir
 
         match config.calc_type:
             case CalcType.BULK_RELAX:
@@ -563,11 +753,14 @@ class WorkflowEngine:
                 )
 
             case CalcType.NBO:
+                _nbo_cfg = dict(config.nbo_config) if config.nbo_config else {}
+                _basis = _nbo_cfg.pop("basis_source", None)
                 maker.write_nbo(
                     output_dir,
+                    basis_source=_basis,
                     prev_dir=prev,
                     structure=struct if prev is None else None,
-                    nbo_config=config.nbo_config,
+                    nbo_config=_nbo_cfg or None,
                 )
 
             case CalcType.MD_NVT | CalcType.MD_NPT:
@@ -584,7 +777,17 @@ class WorkflowEngine:
 
             case _:
                 raise ValueError(f"不支持的计算类型: {config.calc_type}")
-        
+
+        # 7. Copy WAVECAR/CHGCAR from prev_dir (silent no-op if absent/empty).
+        # 将 WAVECAR/CHGCAR 从 prev_dir 复制到输出目录（不存在或为空时静默跳过）。
+        if prev is not None:
+            self._copy_prev_wavecharge(prev, output_dir, config.user_incar_overrides)
+
+        # 8. Copy vdW kernel file for functionals that require it (BEEF, BEEFVTST).
+        # 为需要 vdW 核文件的泛函（BEEF、BEEFVTST）复制 vdw_kernel.bindat。
+        if any(v in config.functional for v in _VDW_NEEDED):
+            self._copy_vdw_kernel(output_dir)
+
         logger.info(f"工作流完成，输入文件已生成至: {output_dir}")
         return str(output_dir)
     
@@ -636,66 +839,3 @@ class WorkflowEngine:
         return CALC_TYPE_REGISTRY[config.calc_type].script_category
 
 
-# === 便捷函数 ===
-
-def quick_relax(structure: Union[str, Path], output_dir: str = "calc_relax", 
-                functional: str = "PBE", is_slab: bool = False) -> str:
-    """
-    快速结构优化工作流
-    
-    用法:
-        quick_relax("POSCAR", "calc/relax")
-        quick_relax("POSCAR", "calc/slab", is_slab=True)
-    """
-    config = WorkflowConfig(
-        calc_type=CalcType.SLAB_RELAX if is_slab else CalcType.BULK_RELAX,
-        structure=structure,
-        functional=functional,
-        output_dir=output_dir,
-    )
-    engine = WorkflowEngine()
-    return engine.run(config)
-
-
-def quick_static(structure: Union[str, Path], output_dir: str = "calc_static",
-                 functional: str = "PBE", need_dos: bool = False) -> str:
-    """
-    快速静态计算工作流
-    
-    用法:
-        quick_static("POSCAR", "calc/static")
-        quick_static("calc/relax", "calc/static", need_dos=True)
-    """
-    calc_type = CalcType.DOS_SP if need_dos else CalcType.STATIC_SP
-    config = WorkflowConfig(
-        calc_type=calc_type,
-        structure=structure,
-        functional=functional,
-        output_dir=output_dir,
-        prev_dir=structure if Path(structure).is_dir() else None,
-    )
-    engine = WorkflowEngine()
-    return engine.run(config)
-
-
-def quick_neb(start_struct: Union[str, Path], end_struct: Union[str, Path],
-              output_dir: str = "calc_neb", functional: str = "PBE", 
-              n_images: int = 6) -> str:
-    """
-    快速 NEB 过渡态搜索工作流
-    
-    用法:
-        quick_neb("start.cif", "end.cif", "calc/neb")
-        quick_neb("00-relax", "10-relax", "calc/neb")
-    """
-    config = WorkflowConfig(
-        calc_type=CalcType.NEB,
-        structure=start_struct,
-        start_structure=start_struct,
-        end_structure=end_struct,
-        functional=functional,
-        output_dir=output_dir,
-        n_images=n_images,
-    )
-    engine = WorkflowEngine()
-    return engine.run(config)

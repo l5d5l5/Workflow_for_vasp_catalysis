@@ -1,0 +1,12 @@
+basisSet pbeVaspFit2015
+COHPstartEnergy -20.0
+COHPendEnergy 20.0
+cohpGenerator from 1.8 to 2.3 type Fe type O orbitalwise
+saveProjectionToFile
+gaussianSmearingWidth 0.05
+basisfunctions Ti 3d 3p 4s 
+basisfunctions Al 3p 3s 
+basisfunctions O 2p 2s 
+
+! --- Custom User Lines ---
+cohpGenerator from 1.1 to 1.5 type C  type O orbitalwise

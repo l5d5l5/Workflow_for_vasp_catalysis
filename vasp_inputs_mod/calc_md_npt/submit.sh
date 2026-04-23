@@ -1,0 +1,41 @@
+#!/bin/bash
+#PBS -N calc_md_npt
+#PBS -l nodes=1:ppn=72:c72
+#PBS -l walltime=200:00:00
+#PBS -j oe
+#PBS -q low 
+ulimit -s unlimited
+
+
+# parameters
+VER=5.4.4    # version option   : 5.4.4 6.2.1
+TYPE1=beef     # type1 option: org beef vtst beefvtst
+TYPE2=std    # type2 option     : std gam ncl gpu (for gpu, use 5.4.4)
+OPT=2    # optimization option: 2 3 (2 stable; 3 slightly faster than 2) 
+COMPILER=2020u1    # select intel compiler: 2018u3 2020u2
+if [ $COMPILER == 2020 ] ; then
+    IMPIVER=2019.7.217
+elif [ $COMPILER == 2018u3 ] ; then
+    IMPIVER=2018.3.222
+elif [ $COMPILER == 2020u2 ] ; then
+    IMPIVER=2019.8.254
+fi
+# other parameters, no need to chage
+VASPHOME=/data/software/vasp/compile/
+LOG_FILE=run.log    # name of the log file
+# load enviromental parameters
+source /data/opt/intel$COMPILER/compilers_and_libraries/linux/bin/compilervars.sh intel64
+export LD_LIBRARY_PATH=/data/opt/intel$COMPILER/mkl/lib/intel64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/data/opt/intel$COMPILER/lib/intel64:$LD_LIBRARY_PATH
+source /data/opt/intel$COMPILER/impi/$IMPIVER/intel64/bin/mpivars.sh 
+# gen list file to bind cores 
+cd $PBS_O_WORKDIR
+mpirun  $VASPHOME$VER\_$COMPILER/vasp.$VER\_$TYPE1\_O$OPT/bin/vasp_$TYPE2 > $LOG_FILE 2>&1
+
+# Clean useless files
+ 
+
+# add additional task
+
+
+echo "run complete on `hostname`: `date` `pwd`" >> ~/job.log

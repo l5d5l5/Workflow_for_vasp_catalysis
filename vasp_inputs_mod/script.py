@@ -216,14 +216,15 @@ class Script:
         self,
         template_path: Optional[Union[str, Path]] = None,
         cluster_defaults: Optional[Dict[str, Any]] = None,
-        vdw_path: Union[str, Path] = "/data2/home/luodh/Git-workflow/Workflow_for_vasp_catalysis/scripts/vdw_kernel.bindat",
+        vdw_path: Optional[Union[str, Path]] = None,
     ):
         """
         :param template_path: 模板文件路径
         :param cluster_defaults: 当前超算集群的全局默认参数字典（优先级最低的基础值）
-        :param vdw_path: vdw_kernel.bindat 在当前集群上的绝对路径
+        :param vdw_path: vdw_kernel.bindat 在当前集群上的绝对路径；不传时尝试读取 FLOW_VDW_KERNEL
         """
-        self.vdw_path = Path(vdw_path)
+        raw_vdw = str(vdw_path).strip() if vdw_path is not None else os.environ.get("FLOW_VDW_KERNEL", "").strip()
+        self.vdw_path = Path(raw_vdw).expanduser() if raw_vdw else None
         
         # 1. 确定模板文件路径
         if template_path:
@@ -487,16 +488,23 @@ class Script:
 
     def _copy_vdw_kernel(self, target_folders: List[Path]):
         """自动为 BEEF 泛函复制 vdw_kernel.bindat"""
+        if self.vdw_path is None:
+            logger.warning("未配置 vdw_kernel.bindat 路径；VASP 将耗时自行生成。")
+            return
         if not self.vdw_path.exists():
             logger.warning(
                 "找不到 vdw_kernel.bindat (%s)，VASP 将耗时自行生成。", self.vdw_path
             )
+            return
 
         count = 0
         for dst_folder in target_folders:
             dst_file = dst_folder / "vdw_kernel.bindat"
             if not dst_file.exists():
-                shutil.copy2(self.vdw_path, dst_file)
+                # Delegate file I/O to script_writer — all filesystem writes
+                # live there; lazy import avoids a circular dependency at module load.
+                from .script_writer import ScriptWriter as _SW
+                _SW._copy_file(self.vdw_path, dst_file)
                 count += 1
                 
         if count > 0:
@@ -567,8 +575,12 @@ class Script:
         target_folders = self._parse_folders(folders)
         generated_paths: List[str] = []
 
+        # Lazy import — avoids circular dependency at module load
+        # (script_writer.py imports from script.py at the top level).
+        from .script_writer import ScriptWriter as _SW
+
         for dst_folder in target_folders:
-            dst_folder.mkdir(parents=True, exist_ok=True)
+            _SW._ensure_dir(dst_folder)
 
             # JOB_NAME 使用文件夹名
             current_context = {"JOB_NAME": dst_folder.name}
@@ -579,11 +591,7 @@ class Script:
                 rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
 
             file_path = dst_folder / output_filename
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(rendered)
-
-            if make_executable:
-                os.chmod(file_path, 0o755)
+            _SW._write_script_file(file_path, rendered, make_executable=make_executable)
 
             generated_paths.append(str(file_path))
 
