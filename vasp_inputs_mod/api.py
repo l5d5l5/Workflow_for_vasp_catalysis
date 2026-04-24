@@ -960,9 +960,8 @@ class VaspAPI:
     def validate_params(self, params: VaspWorkflowParams) -> List[str]:
         """Validate a ``VaspWorkflowParams`` object without executing the workflow.
 
-        Checks: calc_type membership, structure path existence, functional name,
-        k-point density sign, prev_dir existence + CONTCAR presence, NEB params,
-        MD params.
+        Delegates all checks to ``validator.validate()``.  Returns the error list
+        rather than raising, preserving the ``List[str]`` contract for callers.
 
         Args:
             params: Workflow parameters to validate.
@@ -970,23 +969,12 @@ class VaspAPI:
         Returns:
             List of human-readable error strings (empty if valid).
 
-        在不执行工作流的情况下验证 ``VaspWorkflowParams`` 对象。
-
-        检查项：calc_type 合法性、结构路径存在性、泛函名称、K 点密度正负、
-        prev_dir 存在性及 CONTCAR 存在性、NEB 参数、MD 参数。
-
-        参数：
-            params: 待验证的工作流参数。
-
-        返回：
-            人类可读的错误字符串列表（无错误时为空列表）。
+        将所有检查委托给 ``validator.validate()``，以 ``List[str]`` 形式返回错误，
+        而非抛出异常，保持调用方兼容性。
         """
         if params is None:
             return ["VaspWorkflowParams object is None"]
 
-        # Delegate all parameter-level checks to the shared validator.
-        # Catch ValidationError and return its error list to preserve the
-        # List[str] return contract for existing callers.
         errors: List[str] = []
         try:
             _validator_validate(
@@ -999,16 +987,6 @@ class VaspAPI:
             )
         except ValidationError as exc:
             errors.extend(exc.errors)
-
-        # API-level check that operates on the typed FrontendMDParams object —
-        # cannot be expressed in the generic validator without coupling it to
-        # internal dataclasses.
-        if params.calc_type in ("md_nvt", "md_npt") and params.md:
-            if params.md.nsteps <= 0:
-                errors.append("MD步数必须大于0")
-            if params.md.start_temp <= 0:
-                errors.append("温度必须大于0")
-
         return errors
 
     @staticmethod
@@ -1681,7 +1659,6 @@ def generate_inputs(
     output_dir: Optional[Union[str, Path]] = None,
     prev_dir: Optional[Union[str, Path]] = None,
     *,
-    calc_ir: bool = False,
     incar: Optional[Dict[str, Any]] = None,
     magmom: Optional[Union[List[float], Dict[str, float]]] = None,
     dft_u: Optional[Dict[str, Any]] = None,
@@ -1710,7 +1687,8 @@ def generate_inputs(
             ``"static_dos"`` — single-point + projected DOS (writes CHGCAR);
             ``"static_charge"`` — single-point + full charge density;
             ``"static_elf"`` — single-point + electron localisation function;
-            ``"freq"`` — vibrational frequencies; pair with ``calc_ir=True`` for IR/DFPT;
+            ``"freq"`` — vibrational frequencies (finite differences, IBRION=5);
+            ``"freq_ir"`` — vibrational frequencies + IR intensities (DFPT, IBRION=7);
             ``"lobster"``    — COHP bonding analysis (writes WAVECAR);
             ``"nmr_cs"`` / ``"nmr_efg"`` — NMR chemical shift / EFG;
             ``"nbo"``        — Natural Bond Orbital analysis;
@@ -1724,7 +1702,8 @@ def generate_inputs(
             ``"static_dos"`` — 单点 + 投影态密度（输出 CHGCAR）；
             ``"static_charge"`` — 单点 + 全电荷密度；
             ``"static_elf"`` — 单点 + 电子局域函数；
-            ``"freq"`` — 振动频率；配合 ``calc_ir=True`` 使用可计算 IR/DFPT；
+            ``"freq"`` — 振动频率（有限差分，IBRION=5）；
+            ``"freq_ir"`` — 振动频率 + 红外强度（DFPT，IBRION=7）；
             ``"lobster"``    — COHP 化学键分析（输出 WAVECAR）；
             ``"nmr_cs"`` / ``"nmr_efg"`` — NMR 化学位移 / 电场梯度；
             ``"nbo"``        — 自然键轨道分析；
@@ -1816,17 +1795,6 @@ def generate_inputs(
             以下计算类型需要或可自动检测：``"static_dos"``、``"static_charge"``、
             ``"static_elf"``、``"lobster"``、``"nbo"``、``"dimer"``。
             示例：``prev_dir="./01-slab_relax/Fe110"``。
-
-        calc_ir (bool): When ``calc_type="freq"``, set to ``True`` to request an
-            IR-intensity calculation via DFPT.  The following INCAR tags are
-            then injected automatically: ``IBRION=7`` (DFPT driver),
-            ``LEPSILON=True`` (dielectric tensor), ``NWRITE=3``.  These must
-            **not** be overridden via ``incar=``.
-            Default: ``False`` (standard finite-difference frequency).
-        calc_ir (bool): 当 ``calc_type="freq"`` 时，设为 ``True`` 以通过 DFPT 计算
-            红外强度。以下 INCAR 标记将被自动注入：``IBRION=7``（DFPT 驱动器）、
-            ``LEPSILON=True``（介电张量）、``NWRITE=3``。这些标记**不应**通过
-            ``incar=`` 手动覆盖。默认值：``False``（标准有限差分频率计算）。
 
         incar (dict | None): **The single channel for all INCAR overrides.**
             Pass any VASP INCAR tag as a plain ``{"TAG": value}`` dict.
@@ -2115,16 +2083,6 @@ def generate_inputs(
     nbo_config_params: Optional[Dict[str, Any]] = dict(nbo_config) if nbo_config else None
 
     # ── 4. Assemble VaspWorkflowParams ─────────────────────────────────────
-
-    # Set FrontendFrequencyParams so the dry_run INCAR preview reflects calc_ir tags.
-    # Without this, _get_incar_params() would not inject LEPSILON/IBRION=7 in dry_run mode.
-    # 设置 FrontendFrequencyParams 以确保 dry_run INCAR 预览正确反映 calc_ir 的标记。
-    _freq_params = (
-        FrontendFrequencyParams(calc_ir=calc_ir)
-        if calc_type in ("freq", "freq_ir")
-        else None
-    )
-
     params = VaspWorkflowParams(
         calc_type=calc_type,
         structure=structure,
@@ -2137,7 +2095,6 @@ def generate_inputs(
         lobster=lobster_params,
         nbo_config=nbo_config_params,
         custom_incar=extra_incar if extra_incar else None,
-        frequency=_freq_params,
     )
 
     # ── 5. Dry run: return preview dict without any file I/O ───────────────

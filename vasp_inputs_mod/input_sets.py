@@ -12,12 +12,15 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 from pymatgen.core import Structure
 from pymatgen.io.vasp.inputs import Incar, Kpoints
 from pymatgen.io.vasp.sets import (
-    LobsterSet,
     MPMetalRelaxSet,
     MPStaticSet,
     MVLSlabSet,
     NEBSet,
 )
+try:
+    from pymatgen.io.lobster.sets import LobsterSet
+except ImportError:
+    from pymatgen.io.vasp.sets import LobsterSet 
 
 logger = logging.getLogger(__name__)
 
@@ -522,43 +525,97 @@ class LobsterSetEcat(VaspInputSetEcat, LobsterSet):
 class NEBSetEcat(VaspInputSetEcat, NEBSet):
     def __init__(
         self,
-        start_structure: Union[str, Structure],
-        end_structure: Union[str, Structure],
+        start_structure: Union[str, Path, Structure],
+        end_structure: Union[str, Path, Structure],
         n_images: int = 6,
         intermediate_structures: Optional[List[Structure]] = None,
         functional: str = "PBE",
         use_default_incar: bool = True,
         use_idpp: bool = True,
         user_incar_settings: Optional[Dict[str, Any]] = None,
-        user_kpoints_settings: Optional[Dict[str, Any]] = None,
+        user_kpoints_settings: Optional[Any] = None,
         **extra_kwargs,
     ):
-        start_structure = self._load_structure(start_structure)
-        end_structure = self._load_structure(end_structure)
+        # 避免重复读取已是 Structure 对象的情况
+        start_structure = (
+            start_structure
+            if isinstance(start_structure, Structure)
+            else self._load_structure(start_structure)
+        )
+        end_structure = (
+            end_structure
+            if isinstance(end_structure, Structure)
+            else self._load_structure(end_structure)
+        )
         self.functional = functional.upper()
 
+        # ── 插值生成中间像 ────────────────────────────────────────────────
         if intermediate_structures is None:
             if use_idpp:
                 try:
                     from pymatgen.analysis.diffusion.neb.pathfinder import IDPPSolver
                     solver = IDPPSolver.from_endpoints(
-                        [start_structure, end_structure], n_images=n_images + 2, sort_tol=0.1
+                        [start_structure, end_structure],
+                        n_images=n_images + 2,
+                        sort_tol=0.1,
                     )
-                    intermediate_structures = solver.run(maxiter=2000, tol=1e-5, species=start_structure.species)
+                    intermediate_structures = solver.run(
+                        maxiter=2000, tol=1e-5, species=start_structure.species
+                    )
                 except Exception as e:
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         "IDPPSolver failed (%s). Falling back to linear interpolation.", e
                     )
-                    intermediate_structures = start_structure.interpolate(end_structure, n_images + 1)
+                    intermediate_structures = start_structure.interpolate(
+                        end_structure, n_images + 1
+                    )
             else:
-                intermediate_structures = start_structure.interpolate(end_structure, n_images + 1)
+                intermediate_structures = start_structure.interpolate(
+                    end_structure, n_images + 1
+                )
 
+        # ── 合并 INCAR ────────────────────────────────────────────────────
         incar = self._build_incar(
             self.functional,
             DEFAULT_INCAR_NEB if use_default_incar else None,
-            user_incar_settings=user_incar_settings
+            user_incar_settings=user_incar_settings,
         )
 
+        # ── MAGMOM 格式保护 ───────────────────────────────────────────────
+        # pymatgen NEBSet.incar (sets.py:614) 对 MAGMOM 调用 .get(sym, 0)，
+        # 要求为 Dict[str, float]；list/str 会触发 AttributeError。
+        if "MAGMOM" in incar and not isinstance(incar["MAGMOM"], dict):
+            mag_val = incar["MAGMOM"]
+            mag_list: List[float] = []
+
+            if isinstance(mag_val, (list, tuple)):
+                mag_list = [float(v) for v in mag_val]
+            elif isinstance(mag_val, str):
+                for token in mag_val.split():
+                    if "*" in token:
+                        count, val = token.split("*", 1)
+                        mag_list.extend([float(val)] * int(count))
+                    else:
+                        mag_list.append(float(token))
+
+            if mag_list:
+                per_elem: Dict[str, List[float]] = {}
+                for idx, site in enumerate(start_structure):
+                    v = mag_list[idx] if idx < len(mag_list) else mag_list[-1]
+                    per_elem.setdefault(site.species_string, []).append(v)
+                incar["MAGMOM"] = {k: sum(v) / len(v) for k, v in per_elem.items()}
+                logger.debug(
+                    "NEBSetEcat: converted MAGMOM → per-element dict: %s",
+                    incar["MAGMOM"],
+                )
+            else:
+                incar.pop("MAGMOM", None)
+                logger.warning(
+                    "NEBSetEcat: failed to parse MAGMOM value '%s'; tag removed.",
+                    mag_val,
+                )
+
+        # ── 传入 pymatgen NEBSet ──────────────────────────────────────────
         super().__init__(
             structures=intermediate_structures,
             user_incar_settings=incar,
@@ -570,48 +627,43 @@ class NEBSetEcat(VaspInputSetEcat, NEBSet):
     def from_prev_calc(
         cls,
         prev_dir: Union[str, Path],
-        start_structure: Union[str, Structure, Path],
-        end_structure: Union[str, Structure, Path],
+        start_structure: Union[str, Path, Structure],
+        end_structure: Union[str, Path, Structure],
         n_images: int = 6,
-        use_idpp: bool =True,
+        use_idpp: bool = True,
         user_incar_settings: Optional[Dict[str, Any]] = None,
         user_kpoints_settings: Optional[Any] = None,
-        **extra_kwargs,
-    ):
-        prev_dir = Path(prev_dir).resolve()
-        
-        try:
-            base_incar = Incar.from_file(prev_dir / "INCAR")
-        except FileNotFoundError:
-            logging.getLogger(__name__).warning(f"INCAR not found in {prev_dir}, using default.")
-            base_incar = Incar()
-        
-        try:
-            base_kpoints = Kpoints.from_file(prev_dir / "KPOINTS")
-        except FileNotFoundError:
-            base_kpoints = None
-            
-        final_incar = dict(base_incar)
-        if DEFAULT_INCAR_NEB:
-            final_incar.update(DEFAULT_INCAR_NEB)
-        if user_incar_settings:
-            final_incar.update(user_incar_settings)
+        **kwargs,
+    ) -> "NEBSetEcat":
+        prev_dir = Path(prev_dir)
 
-        final_kpoints = user_kpoints_settings if user_kpoints_settings is not None else base_kpoints
-
-        init_kwargs = extra_kwargs.copy()
-        init_kwargs.update(
-            {
-                "start_structure": start_structure,  # 直接传原始参数
-                "end_structure": end_structure,      # 直接传原始参数
-                "n_images": n_images,
-                "use_idpp": use_idpp,
-                "use_default_incar": False,  
-                "user_incar_settings": final_incar,
-                "user_kpoints_settings": final_kpoints,
-            }
+        # 先加载 start_structure，用于 MAGMOM 转换时的结构参考
+        start_struct = (
+            start_structure
+            if isinstance(start_structure, Structure)
+            else cls._load_structure(start_structure)
         )
-        return cls(**init_kwargs)                  
+
+        # 传入 structure 以支持 MAGMOM per-site 转换
+        inherited_incar, functional = cls._read_and_convert_incar(
+            prev_dir / "INCAR",
+            structure=start_struct,
+        )
+
+        # 合并：继承 INCAR < 用户覆盖
+        merged_incar = {**inherited_incar, **(user_incar_settings or {})}
+
+        return cls(
+            start_structure=start_struct,   # 传已加载对象，避免重复读取
+            end_structure=end_structure,
+            n_images=n_images,
+            use_idpp=use_idpp,
+            functional=functional,
+            use_default_incar=True,
+            user_incar_settings=merged_incar,
+            user_kpoints_settings=user_kpoints_settings,
+            **kwargs,
+        )             
     
 
 class FreqSetEcat(MPStaticSetEcat):

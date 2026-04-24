@@ -77,7 +77,6 @@ def test_freq_ir():
     "freq_ir",
     structure=structure_path,
     functional="beef",
-    calc_ir=True,
     kpoints_density=50.0,
     incar={
         "POTIM": 0.015,

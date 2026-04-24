@@ -51,7 +51,7 @@ from .constants import (
     DEFAULT_INCAR_BULK, DEFAULT_INCAR_SLAB,
     DEFAULT_INCAR_NEB, DEFAULT_INCAR_DIMER, DEFAULT_INCAR_LOBSTER,
     DEFAULT_INCAR_NMR_CS, DEFAULT_INCAR_NMR_EFG, DEFAULT_INCAR_MD,
-    DEFAULT_INCAR_MD_NPT, DEFAULT_INCAR_FREQ, DEFAULT_INCAR_NBO,
+    DEFAULT_INCAR_MD_NPT, DEFAULT_INCAR_FREQ, DEFAULT_INCAR_FREQ_IR, DEFAULT_INCAR_NBO,
     INCAR_DELTA_STATIC_SP,
     INCAR_DELTA_STATIC_DOS,
     INCAR_DELTA_STATIC_CHG,
@@ -143,13 +143,12 @@ CALC_TYPE_REGISTRY: Dict[CalcType, CalcTypeConfig] = {
         need_vtst=True,
         script_category=CalcCategory.DIMER,
     ),
-    # 频率（IR 增量由 FreqSetEcat 内部 calc_ir 参数处理）
     CalcType.FREQ: CalcTypeConfig(
         incar_base=DEFAULT_INCAR_FREQ,
         script_category=CalcCategory.FREQ,
     ),
     CalcType.FREQ_IR: CalcTypeConfig(
-        incar_base=DEFAULT_INCAR_FREQ,
+        incar_base=DEFAULT_INCAR_FREQ_IR,
         script_category=CalcCategory.FREQ,
     ),
     # 性质分析

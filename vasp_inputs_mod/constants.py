@@ -187,6 +187,16 @@ DEFAULT_INCAR_FREQ: Dict[str, Any] = {
     "LORBIT": 11,       # Write lm-decomposed projected DOS. / 输出 lm 分解的投影 DOS。
 }
 
+# Default INCAR settings for DFPT frequency + IR intensity calculations.
+# IBRION=7/LEPSILON=True/NWRITE=3 are the defining tags for this calc type.
+# DFPT 频率 + 红外强度计算的默认 INCAR 设置。
+DEFAULT_INCAR_FREQ_IR: Dict[str, Any] = {
+    **DEFAULT_INCAR_FREQ,
+    "IBRION":   7,      # DFPT driver (replaces finite-difference IBRION=5). / DFPT 驱动器（替换有限差分 IBRION=5）。
+    "LEPSILON": True,   # Compute dielectric tensor + Born charges for IR intensities. / 计算介电张量和 Born 有效电荷。
+    "NWRITE":   3,      # Verbose output required by LEPSILON. / LEPSILON 要求的详细输出级别。
+}
+
 # Default INCAR settings for LOBSTER chemical bonding analysis.
 # LOBSTER 化学键分析的默认 INCAR 设置。
 DEFAULT_INCAR_LOBSTER: Dict[str, Any] = {
