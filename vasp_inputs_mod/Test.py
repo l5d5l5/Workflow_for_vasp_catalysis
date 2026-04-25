@@ -206,6 +206,7 @@ if __name__ == "__main__":
             "SPRING": -5,    # NEB 弹簧常数（eV/Å²）；负值 = 切向弹簧
             "NPAR":    4,
         },
+        
         output_dir="neb_run/",
         ))
     except Exception as e:

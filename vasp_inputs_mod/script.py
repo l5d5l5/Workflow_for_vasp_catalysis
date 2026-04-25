@@ -117,7 +117,7 @@ _CATEGORY_CONFIG: Dict[CalcCategory, CategoryConfig] = {
         "need_vdw": False,
         "compiler": "2020u1",
         "typical_walltime": 200,
-        "typical_cores": 144,          # NEB 通常需要更多核（每image × 几个核）
+        "typical_cores": 72,
         "requires_wavecar": False,
     },
     CalcCategory.DIMER: {
@@ -219,18 +219,16 @@ class Script:
         vdw_path: Optional[Union[str, Path]] = None,
     ):
         """
-        :param template_path: 模板文件路径
+        :param template_path: 模板文件路径；不传时读取 FLOW_SCRIPT_TEMPLATE 环境变量
         :param cluster_defaults: 当前超算集群的全局默认参数字典（优先级最低的基础值）
         :param vdw_path: vdw_kernel.bindat 在当前集群上的绝对路径；不传时尝试读取 FLOW_VDW_KERNEL
         """
         raw_vdw = str(vdw_path).strip() if vdw_path is not None else os.environ.get("FLOW_VDW_KERNEL", "").strip()
         self.vdw_path = Path(raw_vdw).expanduser() if raw_vdw else None
-        
-        # 1. 确定模板文件路径
-        if template_path:
-            self.template_path = Path(template_path)
-        else:
-            self.template_path = Path(__file__).resolve().parent / "scripts" / "script"
+
+        # 1. 确定模板文件路径：显式传参 > FLOW_SCRIPT_TEMPLATE 环境变量 > 包内默认路径
+        raw_tmpl = str(template_path).strip() if template_path is not None else os.environ.get("FLOW_SCRIPT_TEMPLATE", "").strip()
+        self.template_path = Path(raw_tmpl).expanduser() if raw_tmpl else Path(__file__).resolve().parent / "scripts" / "script"
 
         # 2. 设置集群的"全局基础参数"（最低优先级 Fallback）
         #    当模式默认值和用户显式传入值都不存在时，才回落到这里

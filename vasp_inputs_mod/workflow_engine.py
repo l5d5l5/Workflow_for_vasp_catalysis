@@ -528,7 +528,13 @@ class WorkflowEngine:
 
         return incar_additions
 
-    def run(self, config: WorkflowConfig) -> str:
+    def run(
+        self,
+        config: WorkflowConfig,
+        generate_script: bool = True,
+        cores: Optional[int] = None,
+        walltime: Optional[int] = None,
+    ) -> str:
         """Write VASP input files for *config* to ``config.output_dir``.
 
         Steps
@@ -541,6 +547,15 @@ class WorkflowEngine:
         6. Dispatch to the correct ``maker.write_*()`` via a ``match`` statement.
         7. Copy WAVECAR/CHGCAR from ``prev_dir`` into the output directory.
         8. Copy ``vdw_kernel.bindat`` if a vdW functional is used.
+        9. Optionally generate a PBS/SLURM job submission script.
+
+        Args:
+            config:          Workflow configuration.
+            generate_script: If ``True``, write a job submission script after
+                             generating VASP inputs.  Failures are logged as
+                             warnings; VASP inputs are never affected.
+            cores:           CPU core count passed to the script generator.
+            walltime:        Wall-time limit in hours passed to the script generator.
 
         To add a new calc type, add a ``case CalcType.NEW_TYPE:`` arm here that
         calls the appropriate ``VaspInputMaker`` method with any required
@@ -786,6 +801,19 @@ class WorkflowEngine:
         # 为需要 vdW 核文件的泛函（BEEF、BEEFVTST）复制 vdw_kernel.bindat。
         if any(v in config.functional for v in _VDW_NEEDED):
             self._copy_vdw_kernel(output_dir)
+
+        # 9. Generate PBS/SLURM job submission script.
+        # 生成 PBS/SLURM 作业提交脚本（失败只记录警告，不影响 VASP 输入文件）。
+        if generate_script:
+            try:
+                self.generate_script(
+                    config=config,
+                    output_dir=output_dir,
+                    cores=cores,
+                    walltime=walltime,
+                )
+            except Exception as e:
+                logger.warning("Script generation failed (VASP inputs are unaffected): %s", e)
 
         logger.info(f"工作流完成，输入文件已生成至: {output_dir}")
         return str(output_dir)

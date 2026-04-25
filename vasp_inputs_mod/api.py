@@ -940,19 +940,12 @@ class VaspAPI:
         logger.info(f"开始执行工作流: calc_type={params.calc_type}")
 
         config = params.to_workflow_config()
-        output_dir = self.engine.run(config)
+        output_dir = self.engine.run(config, generate_script=generate_script)
         result = {
             "success":    True,
             "output_dir": output_dir,
             "calc_type":  params.calc_type,
         }
-
-        if generate_script:
-            script_paths = self.engine.generate_script(
-                config=config,
-                **params.get_script_context()
-            )
-            result["script_paths"] = script_paths
 
         logger.info(f"工作流执行完成: {output_dir}")
         return result
@@ -2133,17 +2126,13 @@ def generate_inputs(
         )
         return preview
 
-    # ── 6. Write files ─────────────────────────────────────────────────────
-    out_dir_str: str = VaspAPI().run_workflow(params, generate_script=False)["output_dir"]
-
-    # ── 7. Write PBS submission script ────────────────────────────────────
-    from .script_writer import ScriptWriter as _SW
-    _SW().write(
-        output_dir=Path(out_dir_str),
-        calc_type=calc_type,
-        functional=functional,
-        walltime=walltime,
-        ncores=ncores,
+    # ── 6. Write VASP inputs and PBS/SLURM script ─────────────────────────
+    config = params.to_workflow_config()
+    out_dir_str = WorkflowEngine().run(
+        config,
+        generate_script=True,
+        cores=ncores,
+        walltime=int(walltime.split(":")[0]) if walltime else None,
     )
 
     return out_dir_str
