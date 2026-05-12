@@ -5,7 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ..parsers.ir_parser import get_ir_data
+from parsers.ir_parser import get_ir_data
 
 router = APIRouter(prefix="/ir", tags=["IR 红外光谱"])
 

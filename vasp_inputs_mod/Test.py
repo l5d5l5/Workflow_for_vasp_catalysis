@@ -13,6 +13,7 @@ else:
     print(f"[Warning] Unexpected cwd: {cwd}")
 
 # 导入模块
+import kpoints
 import vasp_inputs_mod.api as api_module
 importlib.reload(api_module)                    # 强制重载最新代码
 from vasp_inputs_mod.api import generate_inputs
@@ -152,12 +153,135 @@ def test_neb():
         user_incar_overrides={
             "SPRING": -5,    # NEB 弹簧常数（eV/Å²）；负值 = 切向弹簧
             "NPAR":    4,
+            "MAGMOM":   {"Ti": 3.0, "O": 0.4},
+            "ISPIN":    2,
+            "LDAU":     True,
+            "LDAUTYPE": 2,
+            "LDAUU":    {"Ti": 3.0, "O": 0.0},
+            "LDAUL":    {"Ti": 2,   "O": -1},
+            "LDAUJ":    {"Ti": 0.0, "O": 0.0},
         },
         output_dir="neb_run/",
     ))
     assert out is not None, "neb generate failed, 返回None"
     print("[PASS] neb generate_inputs succeeded.")
     print(f"  Output: {out}")
+    return out
+
+def test_slab_relax():
+    out = generate_inputs(
+        "slab_relax",
+        structure=structure_path,
+        functional="SCAN",
+        kpoints_density=50.0,
+        prev_dir=structure_path,
+        magmom = {"Ti":3.0, "O":0.4},
+        dft_u = {"Ti":3.0, "O":0.2},
+        incar={
+            "NSW":55,
+            "EDIFF":1E5,
+            "ENCUT":520,
+        },
+    )
+    assert out is not None, "slab_relax generate failed."
+    print("[PASS] slab_relax generate_inputs succeeded.")
+    print(f" Ouput: {out}")
+    return out
+
+def test_bulk_relax():
+    out = generate_inputs(
+        "bulk_relax",
+        structure=structure_path,
+        functional="BEEF",
+        kpoints_density=60.0,
+        prev_dir=structure_path,
+        magmom = {"Ti":3.0, "O":0.4},
+        dft_u = {"Ti":3.0, "O":0.2},
+        incar={
+            "NSW":55,
+            "EDIFF":1E-5,
+            "ENCUT":520,
+        },
+    )
+    assert out is not None, "bulk_relax generate failed."
+    print("[PASS] bulk_relax generate_inputs succeeded.")
+    print(f" Ouput: {out}")
+    return out
+
+def test_static_dos():
+    out = generate_inputs(
+        "static_dos",
+        structure=structure_path,
+        functional="BEEF",
+        kpoints_density=60.0,
+        prev_dir=structure_path,
+        magmom = {"Ti":3.0, "O":0.4},
+        dft_u = {"Ti":3.0, "O":0.2},
+        incar={
+            "NSW":55,
+            "EDIFF":1E-5,
+            "ENCUT":520,
+        },
+    )
+    assert out is not None, "static_dos generate failed."
+    print("[PASS] static_dos generate_inputs succeeded.")
+    print(f" Ouput: {out}")
+    return out
+
+def test_static_charge():
+    out = generate_inputs(
+        "static_charge",
+        structure=structure_path,
+        functional="BEEF",
+        kpoints_density=60.0,
+        prev_dir=structure_path,
+        magmom = {"Ti":3.0, "O":0.4},
+        dft_u = {"Ti":3.0, "O":0.2},
+        incar={
+            "NSW":55,
+            "EDIFF":1E-5,
+            "ENCUT":520,
+        },
+    )
+    assert out is not None, "static_charge generate failed."
+    print("[PASS] static_charge generate_inputs succeeded.")
+    print(f" Ouput: {out}")
+    return out
+
+def test_static_elf():
+    out = generate_inputs(
+        "static_elf",
+        structure=structure_path,
+        functional="BEEF",
+        kpoints_density=60.0,
+        prev_dir=structure_path,
+        magmom = {"Ti":3.0, "O":0.4},
+        dft_u = {"Ti":3.0, "O":0.2},
+        incar={
+            "NSW":55,
+            "EDIFF":1E-5,
+            "ENCUT":520,
+        },
+    )
+    assert out is not None, "static_elf generate failed."
+    print("[PASS] static_elf generate_inputs succeeded.")
+    print(f" Ouput: {out}")
+    return out
+
+def test_freq_ir_workflow():
+    engine = WorkflowEngine()
+    out = engine.run(WorkflowConfig(
+        calc_type="freq_ir",     # IBRION=7 / LEPSILON=True / NWRITE=3 自动注入
+        prev_dir=structure_path,
+        functional="BEEF",
+        kpoints_density=25.0,
+        vibrate_indices=[12, 13, 14],
+        user_incar_overrides={"POTIM": 0.015, "NFREE": 2, "NPAR": 4},
+        output_dir="run_freq_ir",
+    ))
+    assert out is not None, "freq_ir_run generate failed."
+    print("[PASS] freq_ir_run generate_inputs succeeded.")
+    print(f" Ouput: {out}")
     return out
 
 def run_all_tests():
@@ -169,6 +293,13 @@ def run_all_tests():
         "nbo": test_nbo,
         "lobster": test_lobster,
         "neb": test_neb,
+        "slab_relax": test_slab_relax,
+        "bulk_relax":test_bulk_relax,
+        "static_dos": test_static_dos,
+        "static_charge": test_static_charge,
+        "static_elf": test_static_elf,
+        "freq_ir_run": test_freq_ir_workflow,
+
     }
 
     for name, func in tests.items():
@@ -191,24 +322,4 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
-    import traceback
-    try:
-        engine = WorkflowEngine()
-        engine.run(WorkflowConfig(
-        calc_type="neb",
-        start_structure=structure_path,   # 初态结构
-        end_structure=structure_path,     # 末态结构
-        n_images=6,                           # 中间像数量
-        use_idpp=False,                    
-        functional="BEEF",
-        kpoints_density=25.0,
-        user_incar_overrides={
-            "SPRING": -5,    # NEB 弹簧常数（eV/Å²）；负值 = 切向弹簧
-            "NPAR":    4,
-        },
-        
-        output_dir="neb_run/",
-        ))
-    except Exception as e:
-        traceback.print_exc()
     run_all_tests()

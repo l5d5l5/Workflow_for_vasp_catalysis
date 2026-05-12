@@ -232,8 +232,18 @@ def _check_structure(
             errors.append(f"[field]    structure: file does not exist: {p}")
 
 
+# INCAR keys whose values are legitimately per-element dicts (not scalars).
+# MAGMOM can be a per-element dict; LDAUU/LDAUL/LDAUJ are always per-element
+# dicts when produced by to_workflow_config() / VaspInputMaker._apply_dft_u().
+_INCAR_DICT_VALUE_OK: frozenset = frozenset({"MAGMOM", "LDAUU", "LDAUL", "LDAUJ"})
+
+
 def _check_incar(incar: Optional[Any], errors: List[str]) -> None:
-    """[field] incar must be a flat dict[str, Any] when provided."""
+    """[field] incar must be a flat dict[str, Any] when provided.
+
+    MAGMOM, LDAUU, LDAUL, and LDAUJ are allowed to carry per-element dicts —
+    they are handled specially by both pymatgen and VaspInputMaker.
+    """
     if incar is None:
         return
     if not isinstance(incar, dict):
@@ -244,7 +254,7 @@ def _check_incar(incar: Optional[Any], errors: List[str]) -> None:
     for k, v in incar.items():
         if not isinstance(k, str):
             errors.append(f"[field]    incar: keys must be strings, got {k!r}")
-        if isinstance(v, dict):
+        if isinstance(v, dict) and k not in _INCAR_DICT_VALUE_OK:
             errors.append(
                 f"[field]    incar: values must be scalars (not dicts); "
                 f'key "{k}" has a nested dict'
