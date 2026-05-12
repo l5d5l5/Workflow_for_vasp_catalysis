@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>表面结构</title>
+  <style>
+    /* ============================================================
+       继承自“晶体结构”的全局 CSS 框架
+       ============================================================ */
+    :root{
+      --bg:#f5f7fb; --card:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+      --green:#18a957; --green2:#e7f7ee; --shadow:0 8px 24px rgba(17,24,39,.08); --radius:14px;
+      --mono: ui-monospace, Menlo, Consolas, monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);font-family:var(--sans);color:var(--text)}
+    
+    .app{display:flex;height:100vh;min-height:900px}
+    .sidebar{width:270px;background:var(--card);border-right:1px solid var(--line);padding:18px 14px;flex:0 0 auto;overflow-y:auto}
+    .brand{display:flex;gap:10px;align-items:center;margin-bottom:16px}
+    .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--green),#28d17a);box-shadow:0 10px 20px rgba(24,169,87,.22)}
+    .brand .name{font-weight:900;font-size:14px}
+    .brand .sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .navTitle{font-size:12px;color:var(--muted);margin:14px 10px 6px}
+    .nav a{display:flex;align-items:center;text-decoration:none;color:var(--text);padding:10px 10px;border-radius:12px;border:1px solid transparent;margin-bottom:6px;font-size:13px;cursor:pointer}
+    .nav a.active{background:var(--green2);border-color:#c8efd8;color:#0f6c39;font-weight:800}
+    
+    .main{flex:1;display:flex;flex-direction:column;min-width:0}
+    .topbar{height:62px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+    .crumb{font-size:12px;color:var(--muted)}
+    .title{font-size:16px;font-weight:900;margin-top:2px}
+    .right{display:flex;gap:10px;align-items:center}
+    .pill{padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted)}
+
+    .btn{padding:10px 12px;border-radius:12px;border:1px solid #c8efd8;background:var(--green);color:#fff;font-weight:900;box-shadow:0 10px 18px rgba(24,169,87,.18);font-size:12px; cursor:pointer;white-space:nowrap;}
+    .btn.secondary{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn.ghost{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+    
+    .content{padding:18px; height:calc(100vh - 62px); min-height:0}
+    .grid{display:grid;grid-template-columns:360px 1fr 360px;gap:14px;height:100%;min-height:0;}
+    
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .head{padding:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+    .head h3{margin:0;font-size:13px}
+    .body{padding:14px; overflow:auto; min-height:0; display:flex; flex-direction:column;}
+    
+    .field{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:#fff; flex-shrink:0;}
+    .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}
+    .hint{font-size:12px;color:var(--muted);line-height:1.45;margin-top:8px}
+    .mutedSmall{font-size:11px;color:var(--muted);line-height:1.35;margin-top:6px}
+    
+    .row{display:flex;gap:10px;align-items:center}
+    .num{flex:1;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;outline:none;background:#fff;}
+    .num:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .tinyNum{width:64px;padding:7px 8px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;text-align:center;outline:none;background:#fff;}
+    .tinyNum:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .mul{color:var(--muted);font-weight:900;font-size:12px; user-select:none}
+    
+    /* 上传区域样式 */
+    .drop{border:1.5px dashed #cbd5e1;border-radius:12px;padding:12px;background:#fafcff;}
+    .dropTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .dropText{font-size:12px;font-weight:900}
+    .fileName{font-size:12px;color:var(--muted);margin-top:8px}
+    input[type="file"]{display:none}
+    .error{font-size:12px;color:#b91c1c;display:none;margin-top:6px}
+
+    /* Slab 专属补充样式 */
+    .unitPill{padding:9px 10px;border-radius:12px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted);min-width:40px;text-align:center}
+    .switchRow{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .switch{width:46px;height:26px;border-radius:999px;border:1px solid var(--line);background:#fff;position:relative;cursor:pointer;flex:0 0 auto;}
+    .switch::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:999px;background:#e5e7eb;transition:all .18s ease;}
+    .switch.on{background:var(--green2);border-color:#c8efd8}
+    .switch.on::after{left:23px;background:var(--green)}
+    .switchText{font-size:12px;font-weight:900}
+    .switchSub{font-size:11px;color:var(--muted);margin-top:2px}
+
+    /* Dropdown */
+    .dd{position:relative}
+    .ddBtn{width:100%; display:flex; justify-content:space-between; align-items:center; gap:10px;padding:10px 10px; border-radius:12px; border:1px solid var(--line); background:#fff;cursor:pointer; text-align:left;}
+    .ddBtnMain{display:flex; flex-direction:column; gap:2px}
+    .ddBtnTitle{font-size:12px; font-weight:900}
+    .ddBtnSub{font-size:11px; color:var(--muted)}
+    .ddCaret{color:var(--muted); font-size:12px}
+    .ddMenu{position:absolute; left:0; right:0; top:calc(100% + 8px);background:var(--card); border:1px solid var(--line); border-radius:14px;box-shadow:var(--shadow); padding:8px; display:none; z-index:50;max-height:300px; overflow:auto;}
+    .dd.open .ddMenu{display:block}
+    .ddSearch{padding:8px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; font-size:12px; width:100%; outline:none;}
+    .ddItem{padding:10px 10px; border-radius:12px; border:1px solid transparent; cursor:pointer}
+    .ddItem:hover{background:var(--green2); border-color:#c8efd8}
+    .ddTitle{font-size:12px; font-weight:900}
+    .ddSub{font-size:11px; color:var(--muted); margin-top:3px; line-height:1.25}
+
+    /* Viewer */
+    .viewerWrap{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#ffffff,#f7fafc);height:calc(100% - 220px);min-height:380px;position:relative;}
+    #viewer3d{position:absolute; inset:0}
+    .viewerBadge{position:absolute;top:12px;left:12px;padding:6px 10px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12px; z-index:5;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .viewerBadge b{font-family:var(--mono);color:#0f6c39}
+    .mono{font-family:var(--mono)}
+    
+    .infoGrid{margin-top:10px;display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;}
+    .mini{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff}
+    .mini .k{font-size:11px;color:var(--muted)}
+    .mini .v{font-size:12px;font-weight:900;margin-top:4px}
+
+    .viewerActions{margin-top:10px;display:flex;gap:10px;}
+    .viewerActions button{flex:1;padding:11px 12px;border-radius:12px;font-weight:900;cursor:pointer;font-size:12px;}
+    .viewerActions .ghostBtn{border:1px solid var(--line);background:#fff;color:var(--text);}
+    .viewerActions .primaryBtn{border:1px solid #c8efd8;background:var(--green);color:#fff;box-shadow:0 10px 18px rgba(24,169,87,.18);}
+
+    /* Right List & Filters */
+    .searchBox{width:100%;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;outline:none;}
+    .searchBox:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .chip{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;cursor:pointer;user-select:none}
+    .chip.on{border-color:#c8efd8;background:var(--green2);color:#0f6c39;font-weight:900}
+    .list{margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow:auto}
+    .item{border:1px solid var(--line);border-radius:12px;padding:10px;cursor:pointer;background:#fff; display:flex; justify-content:space-between; align-items:center;}
+    .item:hover{background:var(--green2);border-color:#c8efd8}
+    .item .t{font-weight:900;font-size:12px}
+    .item .s{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.25}
+    .item.active{background:var(--green2);border-color:#c8efd8}
+  </style>
+</head>
+
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <div class="name">化学计算AI平台</div>
+        <div class="sub">Catalyst Workbench</div>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="navTitle">平台主页</div>
+      <div class="navTitle">智能模型</div>
+      <div class="navTitle">任务管理</div>
+      <div class="navTitle">催化剂结构</div>
+      <a href="#">晶体结构</a>
+      <a class="active" href="#">表面结构</a>
+      <a href="#">吸附结构</a>
+      <a href="#">纳米颗粒</a>
+      <div class="navTitle">催化剂性能</div>
+      <a href="#">结构优化</a>
+      <a href="#">电子结构</a>
+      <a href="#">分子动力学</a>
+      <a href="#">过渡态</a>
+      <a href="#">计算工作流</a>
+      <div class="navTitle">表征模拟</div>
+      <a href="#">XRD</a>
+      <a href="#">IR</a>
+      <a href="#">NMR模拟</a>
+      <a href="#">NMR分析</a>
+      <div class="navTitle">数据分析</div>
+      <a href="#">结构优化分析</a>
+      <a href="#">态密度分析</a>
+      <a href="#">晶体轨道分析</a>
+      <div class="navTitle">会员中心</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <div class="crumb">催化剂结构 / 表面结构</div>
+        <div class="title">表面结构</div>
+      </div>
+      <div class="right">
+        <div class="pill">🔔</div>
+        <div class="pill">A. Chen</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="grid">
+
+        <!-- LEFT: Tools -->
+        <section class="card">
+          <div class="head"><h3>参数设置</h3></div>
+          <div class="body">
+
+            <!-- 1. 结构输入 -->
+            <div class="field">
+              <label>结构输入</label>
+              
+              <div class="dd" data-dd="bulk" style="margin-bottom: 10px;">
+                <button class="ddBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <div class="ddBtnMain">
+                    <div class="ddBtnTitle" id="bulkTitle">BULK-0108</div>
+                    <div class="ddBtnSub" id="bulkSub">Pt cluster</div>
+                  </div>
+                  <div class="ddCaret">▾</div>
+                </button>
+                <div class="ddMenu" role="listbox" id="bulkMenu">
+                  <!-- 动态渲染 -->
+                </div>
+              </div>
+
+              <div class="drop" id="dropZone">
+                <div class="dropTop">
+                  <div class="dropText">上传结构文件</div>
+                  <label class="btn secondary" for="xyzFile" style="padding: 6px 10px;">选择文件</label>
+                  <input id="xyzFile" type="file" accept=".xyz,text/plain,.cif,.poscar,.vasp">
+                </div>
+                <div class="fileName" id="fileName">拖拽文件到此处</div>
+                <div id="fileErr" class="error">文件解析失败</div>
+              </div>
+            </div>
+
+            <!-- 2. HKL -->
+            <div class="field">
+              <label>hkl 指数</label>
+              <div class="row">
+                <input id="hInput" class="tinyNum" type="number" step="1" value="1" min="-9" max="9">
+                <input id="kInput" class="tinyNum" type="number" step="1" value="1" min="-9" max="9">
+                <input id="lInput" class="tinyNum" type="number" step="1" value="1" min="-9" max="9">
+              </div>
+            </div>
+
+            <!-- 3. Supercell -->
+            <div class="field">
+              <label>表面 Supercell</label>
+              <div class="row">
+                <input id="sxInput" class="tinyNum" type="number" step="1" value="1" min="1" max="9">
+                <span class="mul">×</span>
+                <input id="syInput" class="tinyNum" type="number" step="1" value="1" min="1" max="9">
+              </div>
+            </div>
+
+            <!-- 4. Layers & Vacuum -->
+            <div class="field">
+              <label>总层数 / 固定层数</label>
+              <div class="row" style="margin-bottom: 10px;">
+                <input id="layersInput" class="num" type="number" step="1" value="4" min="1" max="20" title="总层数">
+                <span class="mul">/</span>
+                <input id="fixedLayersInput" class="num" type="number" step="1" value="0" min="0" max="4" title="固定层数">
+                <div class="unitPill">L</div>
+              </div>
+              <label>真空层</label>
+              <div class="row">
+                <input id="vacInput" class="num" type="number" step="0.5" value="15.0" min="5.0" max="40.0" placeholder="真空层">
+                <div class="unitPill">Å</div>
+              </div>
+            </div>
+
+            <!-- 5. Shift & Center -->
+            <div class="field">
+              <label>切割偏移 (Shift)</label>
+              <div class="row">
+                <input id="shiftInput" class="num" type="number" step="0.05" value="0.00" min="0.00" max="0.95">
+              </div>
+              <div class="switchRow" style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+                <div>
+                  <div class="switchText">结构居中</div>
+                  <div class="switchSub">居中于真空层</div>
+                </div>
+                <div id="centerSwitch" class="switch on" role="switch" aria-checked="true"></div>
+              </div>
+            </div>
+
+            <div style="margin-top: auto; padding-top: 10px;">
+              <div class="row">
+                <button id="genSlabBtn" class="btn" style="flex:1;">生成 SLAB</button>
+                <button id="resetBtn" class="btn secondary" style="flex:1;" disabled>返回上一步</button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- MIDDLE: Viewer -->
+        <section class="card">
+          <div class="head">
+            <h3>结构预览</h3>
+            <!-- 导出结构下拉菜单 -->
+            <div style="position:relative;">
+              <button class="btn ghost" id="exportToggleBtn" type="button" style="padding:6px 10px;font-size:11px;">📥 导出结构 ▾</button>
+              <div id="exportMenu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:100;min-width:110px;">
+                <div class="ddItem" onclick="doExport('XYZ')"><div class="ddTitle">XYZ</div></div>
+                <div class="ddItem" onclick="doExport('POSCAR')"><div class="ddTitle">POSCAR</div></div>
+                <div class="ddItem" onclick="doExport('CIF')"><div class="ddTitle">CIF</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="body">
+
+            <div class="viewerWrap" style="height:calc(100% - 210px);">
+              <div class="viewerBadge">当前：<b id="viewerLine">BULK-0001</b> ｜ <span class="mono" id="viewerStatus">就绪</span></div>
+              <div id="viewer3d"></div>
+            </div>
+
+            <!-- 结构信息展示 -->
+            <div class="infoGrid">
+              <div class="mini"><div class="k">a, b, c (Å)</div><div class="v mono" id="abcOut">10.20, 10.20, 15.00</div></div>
+              <div class="mini"><div class="k">Atoms</div><div class="v mono" id="natOut">64</div></div>
+              <div class="mini"><div class="k">Formula</div><div class="v mono" id="formOut">Cu64</div></div>
+              <div class="mini"><div class="k">Supercell</div><div class="v mono" id="scOut">1×1</div></div>
+              <div class="mini"><div class="k">Layers (Fixed)</div><div class="v mono" id="layersOut">4 (0)</div></div>
+              <div class="mini"><div class="k">Vacuum</div><div class="v mono" id="vacOut">15.0 Å</div></div>
+            </div>
+
+            <div class="mini" style="margin-top:10px;">
+              <div class="k">ML预测结果</div>
+              <div class="v" id="mlOut" style="font-weight:900;color:var(--green);">—</div>
+            </div>
+
+            <div class="viewerActions">
+              <button id="mlBtn" class="ghostBtn">ML预测</button>
+              <button id="goOptBtn" class="primaryBtn">进入结构优化</button>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- RIGHT: History / DB -->
+        <section class="card">
+          <div class="head"><h3>结构库</h3></div>
+          <div class="body">
+
+            <input id="dbSearch" class="searchBox" placeholder="搜索：ID / 化学式 / 元素比… (数据库)">
+            <div class="filters">
+              <div class="chip on" data-filter="database">数据库</div>
+              <div class="chip" data-filter="mine">我的</div>
+            </div>
+            <div class="list" id="dbList">
+              <!-- 动态插入 -->
+            </div>
+
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 3Dmol loader -->
+<script>
+  (function load3Dmol(){
+    const cdn = document.createElement('script');
+    cdn.src = 'https://unpkg.com/3dmol/build/3Dmol-min.js';
+    cdn.onload = () => { window.__3dmolReady__ = true; initApp(); };
+    cdn.onerror = () => console.error('[3Dmol] CDN 加载失败');
+    document.head.appendChild(cdn);
+  })();
+</script>
+
+<script>
+  // ============================================================
+  // Mock Bulk DB & Utils
+  // ============================================================
+  const BULK_DB = [
+    { id:"BULK-0001", name:"Cu demo", owner:"database", tags:["Cu","fcc"], xyz:`4\nCu demo\nCu 0.000 0.000 0.000\nCu 2.550 0.000 0.000\nCu 0.000 2.550 0.000\nCu 2.550 2.550 0.000\n`},
+    { id:"BULK-0002", name:"Ni demo", owner:"database", tags:["Ni","fcc"], xyz:`4\nNi demo\nNi 0.000 0.000 0.000\nNi 2.490 0.000 0.000\nNi 0.000 2.490 0.000\nNi 2.490 2.490 0.000\n`},
+    { id:"BULK-0108", name:"Pt cluster", owner:"database", tags:["Pt"], xyz:`6\nPt demo\nPt 0.000 0.000 0.000\nPt 2.770 0.000 0.000\nPt 0.000 2.770 0.000\nPt 2.770 2.770 0.000\nPt 1.385 1.385 2.000\nPt 4.155 1.385 2.000\n`}
+  ];
+
+  const cellParams = {
+    "BULK-0001": { a: 5.10, b: 5.10, c: 5.10, alpha: 90.0, beta: 90.0, gamma: 90.0 },
+    "BULK-0002": { a: 4.98, b: 4.98, c: 4.98, alpha: 90.0, beta: 90.0, gamma: 90.0 },
+    "BULK-0108": { a: 5.54, b: 5.54, c: 5.54, alpha: 90.0, beta: 90.0, gamma: 90.0 }
+  };
+
+  function parseXYZ(text){
+    const lines = text.trim().split(/\r?\n/);
+    if(lines.length < 3) throw new Error("too few lines");
+    const n = parseInt(lines[0].trim(), 10);
+    const atoms = [];
+    for(let i=2; i<2+n; i++){
+      const p = lines[i].trim().split(/\s+/);
+      if(p.length >= 4) atoms.push({el:p[0], x:Number(p[1]), y:Number(p[2]), z:Number(p[3])});
+    }
+    return { comment: lines[1] || "", atoms };
+  }
+  
+  function toXYZ(comment, atoms){
+    return `${atoms.length}\n${comment || ""}\n` + atoms.map(a => `${a.el} ${a.x.toFixed(3)} ${a.y.toFixed(3)} ${a.z.toFixed(3)}`).join("\n") + "\n";
+  }
+
+  function toCIF(comment, atoms, cell) {
+    const c = cell || { a:10, b:10, c:10, alpha:90, beta:90, gamma:90 };
+    let cif = `data_${(comment||"structure").replace(/\s/g,'_')}\n`;
+    cif += `_cell_length_a ${c.a.toFixed(4)}\n_cell_length_b ${c.b.toFixed(4)}\n_cell_length_c ${c.c.toFixed(4)}\n`;
+    cif += `_cell_angle_alpha ${c.alpha.toFixed(4)}\n_cell_angle_beta ${c.beta.toFixed(4)}\n_cell_angle_gamma ${c.gamma.toFixed(4)}\n`;
+    cif += `loop_\n_atom_site_type_symbol\n_atom_site_fract_x\n_atom_site_fract_y\n_atom_site_fract_z\n`;
+    cif += atoms.map(a => `${a.el} ${(a.x/c.a).toFixed(5)} ${(a.y/c.b).toFixed(5)} ${(a.z/c.c).toFixed(5)}`).join("\n");
+    return cif + "\n";
+  }
+
+  function toPOSCAR(comment, atoms, cell) {
+    const c = cell || { a:10, b:10, c:10 };
+    let poscar = `${comment || "Generated by Catalyst Workbench"}\n1.0\n`;
+    poscar += `${c.a.toFixed(4)} 0.0000 0.0000\n0.0000 ${c.b.toFixed(4)} 0.0000\n0.0000 0.0000 ${c.c.toFixed(4)}\n`;
+    const counts = {};
+    atoms.forEach(a => counts[a.el] = (counts[a.el]||0)+1);
+    poscar += Object.keys(counts).join(" ") + "\n";
+    poscar += Object.values(counts).join(" ") + "\n";
+    poscar += "Cartesian\n";
+    atoms.forEach(a => { poscar += `${a.x.toFixed(5)} ${a.y.toFixed(5)} ${a.z.toFixed(5)}\n`; });
+    return poscar;
+  }
+
+  // Slab 生成逻辑
+  function slabFromBulkToy(params){
+    const { bulkAtoms, sx, sy, layers, hkl, vacuum, centered, shift } = params;
+    const sxI = Math.max(1, Math.floor(sx)), syI = Math.max(1, Math.floor(sy)), layersI = Math.max(1, Math.floor(layers));
+    const xs = bulkAtoms.map(a=>a.x), ys = bulkAtoms.map(a=>a.y), zs = bulkAtoms.map(a=>a.z);
+    const dx = (Math.max(...xs) - Math.min(...xs)) || 2.5;
+    const dy = (Math.max(...ys) - Math.min(...ys)) || 2.5;
+    const dz = Math.max(1.6, ((Math.max(...zs) - Math.min(...zs)) || 2.0) + 0.8);
+    const s = Math.max(0, Math.min(0.95, Number(shift) || 0));
+    const tilt = (Math.abs(hkl[0])+Math.abs(hkl[1])+Math.abs(hkl[2])) || 1;
+
+    const out = [];
+    for(let iz=0; iz<layersI; iz++){
+      for(let ix=0; ix<sxI; ix++){
+        for(let iy=0; iy<syI; iy++){
+          for(const a of bulkAtoms){
+            const x = a.x + ix*dx, y = a.y + iy*dy;
+            let z = a.z + iz*dz + s*0.9 + 0.10*((x+y)/(dx+dy))*(tilt/3);
+            out.push({ el:a.el, x, y, z });
+          }
+        }
+      }
+    }
+    const slabMinZ = Math.min(...out.map(a=>a.z));
+    for(const a of out) a.z -= slabMinZ;
+    if(centered){
+      const slabMaxZ = Math.max(...out.map(a=>a.z));
+      const dzShift = (vacuum / 2) - (slabMaxZ / 2);
+      for(const a of out) a.z += dzShift;
+    }
+    return out;
+  }
+
+  // ============================================================
+  // State & Undo
+  // ============================================================
+  const state = {
+    bulk: { id:"BULK-0001", name:"Cu demo", xyz:BULK_DB[0].xyz },
+    hkl: [1,1,1], sc: [1,1], layers: 4, fixedLayers: 0, vacuum: 15.0, centered: true, shift: 0.00,
+    slabCounter: 0,
+    mlOutText: "—",
+    viewerStatusText: "就绪"
+  };
+
+  const undoStack = [];
+  function pushUndo(){
+    undoStack.push(JSON.stringify(state));
+    const resetBtn = document.getElementById('resetBtn');
+    if(resetBtn) resetBtn.disabled = false;
+  }
+  function undo(){
+    const prev = undoStack.pop();
+    const resetBtn = document.getElementById('resetBtn');
+    if(resetBtn) resetBtn.disabled = undoStack.length === 0;
+    if(!prev) return;
+    Object.assign(state, JSON.parse(prev));
+    updateAllUI();
+  }
+
+  // ============================================================
+  // UI Updates & Viewer
+  // ============================================================
+  let viewer = null;
+  let activeFilter = "database";
+
+  function renderViewer(){
+    if(!viewer) return;
+    viewer.clear();
+    viewer.addModel(state.bulk.xyz, "xyz");
+    viewer.setStyle({}, { stick:{radius:0.18}, sphere:{scale:0.28} });
+    viewer.zoomTo(); viewer.render();
+    updateCrystalInfo();
+  }
+
+  function updateCrystalInfo(){
+    const atoms = parseXYZ(state.bulk.xyz).atoms;
+    
+    // Atoms & Formula
+    document.getElementById("natOut").textContent = atoms.length || 0;
+    const counts = {};
+    atoms.forEach(a => counts[a.el] = (counts[a.el]||0)+1);
+    const formula = Object.keys(counts).map(k => `${k}${counts[k]>1?counts[k]:''}`).join('');
+    document.getElementById("formOut").textContent = formula || "—";
+
+    const cell = cellParams[state.bulk.id] || { a: 10, b: 10, c: 10, alpha: 90, beta: 90, gamma: 90 };
+    document.getElementById("abcOut").textContent = `${cell.a.toFixed(2)}, ${cell.b.toFixed(2)}, ${cell.c.toFixed(2)}`;
+    document.getElementById("scOut").textContent = cell.sc || "—";
+    
+    if(cell.layers) {
+      document.getElementById("layersOut").textContent = `${cell.layers} (${cell.fixedLayers || 0})`;
+    } else {
+      document.getElementById("layersOut").textContent = "—";
+    }
+    
+    document.getElementById("vacOut").textContent = cell.vacuum ? `${cell.vacuum.toFixed(1)} Å` : "—";
+  }
+
+  function loadEntry(entry){
+    state.bulk = { id: entry.id, name: entry.name, xyz: entry.xyz };
+    state.mlOutText = "—";
+    state.viewerStatusText = "就绪";
+    document.getElementById("fileName").textContent = `来自结构库：${entry.id}`;
+    updateAllUI();
+  }
+
+  function renderDB(){
+    const q = (document.getElementById("dbSearch").value || "").trim().toLowerCase();
+    const list = document.getElementById("dbList");
+    list.innerHTML = "";
+
+    let items = [];
+    if(activeFilter === "database") {
+      if(!q) {
+        list.innerHTML = `<div class="hint" style="text-align:center; padding:20px 10px;">请输入化学式或ID搜索数据库</div>`;
+        return;
+      }
+      items = BULK_DB.filter(e => e.owner !== "mine").filter(e => {
+        return `${e.id} ${e.name} ${(e.tags||[]).join(" ")}`.toLowerCase().includes(q);
+      });
+    } else {
+      items = BULK_DB.filter(e => e.owner === "mine").filter(e => {
+        if(!q) return true;
+        return e.name.toLowerCase().includes(q);
+      });
+    }
+
+    for(const e of items){
+      const div = document.createElement("div");
+      div.className = "item" + (e.id === state.bulk.id ? " active" : "");
+      
+      let actions = e.owner === "mine" 
+        ? `<div style="display:flex; gap:6px;">
+            <button class="btn secondary ren-btn" style="padding:4px 8px; font-size:11px;" title="重命名">✎</button>
+            <button class="btn secondary del-btn" style="padding:4px 8px; font-size:11px; color:#b91c1c;" title="删除">×</button>
+           </div>`
+        : `<button class="btn secondary add-btn" style="padding:4px 8px; font-size:11px;" title="添加到我的">＋</button>`;
+
+      div.innerHTML = `<div style="flex:1; min-width:0; overflow:hidden;" class="item-content"><div class="t">${e.id}</div><div class="s">${e.name}</div></div>${actions}`;
+
+      div.querySelector('.item-content').addEventListener("click", ()=> {
+        pushUndo(); 
+        loadEntry(e); 
+      });
+
+      const addBtn = div.querySelector('.add-btn');
+      if(addBtn) addBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        const newId = "MY-" + e.id.split("-")[1] + "-" + Math.floor(Math.random()*1000);
+        BULK_DB.push({...e, id: newId, owner: "mine", name: e.name + " (Copy)"});
+        cellParams[newId] = {...cellParams[e.id]};
+        alert("已添加到我的结构库！");
+        renderDB(); renderDropdown();
+      });
+
+      const delBtn = div.querySelector('.del-btn');
+      if(delBtn) delBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        if(confirm(`确定要删除 ${e.name} 吗？`)){
+          BULK_DB.splice(BULK_DB.findIndex(x=>x.id===e.id), 1);
+          if(state.bulk.id === e.id) {
+             // 如果删除了当前查看的，切回默认
+             state.bulk = { id:"BULK-0001", name:"Cu demo", xyz:BULK_DB[0].xyz };
+             updateAllUI();
+          } else {
+             renderDB(); renderDropdown();
+          }
+        }
+      });
+
+      const renBtn = div.querySelector('.ren-btn');
+      if(renBtn) renBtn.addEventListener("click", (ev)=>{
+        ev.stopPropagation();
+        const newName = prompt("请输入新名称", e.name);
+        if(newName && newName.trim()) {
+          e.name = newName.trim();
+          renderDB(); renderDropdown();
+          if(state.bulk.id === e.id) {
+             state.bulk.name = e.name;
+             document.getElementById("bulkSub").textContent = e.name;
+             document.getElementById("viewerLine").textContent = `${state.bulk.id} ${state.bulk.name}`;
+          }
+        }
+      });
+
+      list.appendChild(div);
+    }
+    if(items.length === 0) list.innerHTML = `<div class="hint" style="margin-top:10px;">无匹配结果</div>`;
+  }
+
+  function renderDropdown(){
+    const bMenu = document.getElementById('bulkMenu');
+    bMenu.innerHTML = '';
+    BULK_DB.forEach(e=>{
+      const div = document.createElement('div'); div.className = 'ddItem';
+      div.innerHTML = `<div class="ddTitle">${e.id}</div><div class="ddSub">${e.name}</div>`;
+      div.onclick = () => { 
+        pushUndo(); 
+        loadEntry(e);
+        document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open')); 
+      };
+      bMenu.appendChild(div);
+    });
+  }
+
+  function updateAllUI(){
+    // Sync Inputs
+    document.getElementById('hInput').value = state.hkl[0];
+    document.getElementById('kInput').value = state.hkl[1];
+    document.getElementById('lInput').value = state.hkl[2];
+    document.getElementById('sxInput').value = state.sc[0];
+    document.getElementById('syInput').value = state.sc[1];
+    
+    const layersInput = document.getElementById('layersInput');
+    const fixedLayersInput = document.getElementById('fixedLayersInput');
+    layersInput.value = state.layers;
+    fixedLayersInput.value = state.fixedLayers;
+    fixedLayersInput.max = state.layers;
+
+    document.getElementById('vacInput').value = state.vacuum.toFixed(1);
+    document.getElementById('shiftInput').value = state.shift.toFixed(2);
+    
+    const sw = document.getElementById('centerSwitch');
+    sw.className = state.centered ? "switch on" : "switch";
+    sw.setAttribute('aria-checked', state.centered ? 'true' : 'false');
+
+    // Update Dropdown UI
+    document.getElementById('bulkTitle').textContent = state.bulk.id;
+    document.getElementById('bulkSub').textContent = state.bulk.name;
+
+    renderDB();
+    renderDropdown();
+
+    document.getElementById('viewerLine').textContent = `${state.bulk.id} ${state.bulk.name}`;
+    document.getElementById("mlOut").textContent = state.mlOutText;
+    document.getElementById("viewerStatus").textContent = state.viewerStatusText;
+
+    renderViewer();
+  }
+
+  // ============================================================
+  // Export Structure globally
+  // ============================================================
+  window.doExport = function(format) {
+    format = format.toLowerCase();
+    const atoms = parseXYZ(state.bulk.xyz).atoms;
+    const comment = state.bulk.id;
+    const cell = cellParams[state.bulk.id] || { a:10, b:10, c:10, alpha:90, beta:90, gamma:90 };
+
+    let content = "";
+    if(format === "xyz") content = toXYZ(comment, atoms);
+    else if(format === "cif") content = toCIF(comment, atoms, cell);
+    else if(format === "poscar") content = toPOSCAR(comment, atoms, cell);
+    
+    const blob = new Blob([content], {type:"text/plain"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${comment}.${format}`; a.click();
+    URL.revokeObjectURL(url);
+    document.getElementById('exportMenu').style.display = 'none';
+  };
+
+  // ============================================================
+  // Init & Events
+  // ============================================================
+  function initApp() {
+    viewer = $3Dmol.createViewer(document.getElementById("viewer3d"), { backgroundColor: "white" });
+    updateAllUI();
+
+    // Dropdowns
+    document.querySelectorAll('.ddBtn').forEach(btn=>{
+      btn.addEventListener('click', (e)=>{
+        const dd = e.currentTarget.closest('.dd');
+        const isOpen = dd.classList.contains('open');
+        document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open'));
+        dd.classList.toggle('open', !isOpen);
+      });
+    });
+    window.addEventListener('click', (e)=>{ if(!e.target.closest('.dd')) document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open')); });
+
+    // Export Menu Toggle
+    const exportToggleBtn = document.getElementById('exportToggleBtn');
+    const exportMenu = document.getElementById('exportMenu');
+    if(exportToggleBtn && exportMenu) {
+      exportToggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        exportMenu.style.display = exportMenu.style.display === 'none' ? 'block' : 'none';
+      });
+      window.addEventListener('click', (e) => {
+        if(!e.target.closest('#exportMenu') && e.target !== exportToggleBtn) {
+          exportMenu.style.display = 'none';
+        }
+      });
+    }
+
+    // Switch
+    document.getElementById('centerSwitch').addEventListener('click', ()=>{
+      pushUndo();
+      state.centered = !state.centered;
+      updateAllUI();
+    });
+
+    // Layers Input logic
+    document.getElementById('layersInput').addEventListener('input', (e) => {
+      const maxL = parseInt(e.target.value) || 1;
+      const fixedInput = document.getElementById('fixedLayersInput');
+      fixedInput.max = maxL;
+      if(parseInt(fixedInput.value) > maxL) {
+        fixedInput.value = maxL;
+      }
+    });
+
+    // Generate Slab
+    document.getElementById('genSlabBtn').addEventListener('click', ()=>{
+      pushUndo();
+      state.hkl = [Number(document.getElementById('hInput').value), Number(document.getElementById('kInput').value), Number(document.getElementById('lInput').value)];
+      state.sc = [Number(document.getElementById('sxInput').value), Number(document.getElementById('syInput').value)];
+      state.layers = Number(document.getElementById('layersInput').value);
+      
+      let fL = Number(document.getElementById('fixedLayersInput').value);
+      if(fL > state.layers) fL = state.layers;
+      if(fL < 0) fL = 0;
+      state.fixedLayers = fL;
+
+      state.vacuum = Number(document.getElementById('vacInput').value);
+      state.shift = Number(document.getElementById('shiftInput').value);
+
+      state.slabCounter++;
+      const slabId = `SLAB-${String(state.slabCounter).padStart(4,'0')}`;
+      const bulkAtoms = parseXYZ(state.bulk.xyz).atoms;
+      const atoms = slabFromBulkToy({
+        bulkAtoms,
+        sx: state.sc[0], sy: state.sc[1], layers: state.layers,
+        hkl: state.hkl, vacuum: state.vacuum, centered: state.centered, shift: state.shift
+      });
+
+      const baseCell = cellParams[state.bulk.id] || {a:5,b:5,c:5,alpha:90,beta:90,gamma:90};
+      const slabCell = {
+        a: baseCell.a * state.sc[0],
+        b: baseCell.b * state.sc[1],
+        c: state.vacuum,
+        alpha: 90, beta: 90, gamma: baseCell.gamma,
+        sc: `${state.sc[0]}×${state.sc[1]}`,
+        layers: state.layers,
+        fixedLayers: state.fixedLayers,
+        vacuum: state.vacuum
+      };
+      cellParams[slabId] = slabCell;
+
+      const slabName = `${state.bulk.id} (${state.hkl.join(' ')}) ${state.layers}L`;
+      const xyzStr = toXYZ(slabId, atoms);
+
+      const newEntry = {
+        id: slabId,
+        name: slabName,
+        owner: "mine",
+        tags: ["slab"],
+        xyz: xyzStr
+      };
+      BULK_DB.push(newEntry);
+
+      // 切换到生成的结构，并跳到“我的”标签页
+      state.bulk = { id: slabId, name: slabName, xyz: xyzStr };
+      state.mlOutText = "—";
+      state.viewerStatusText = "就绪";
+      document.getElementById("fileName").textContent = `已生成：${slabId}`;
+
+      activeFilter = "mine";
+      document.querySelectorAll(".chip").forEach(c => c.classList.remove("on"));
+      document.querySelector(".chip[data-filter='mine']").classList.add("on");
+      document.getElementById("dbSearch").placeholder = "搜索：文件名称… (我的)";
+
+      updateAllUI();
+    });
+
+    // Undo logic bound to resetBtn
+    document.getElementById('resetBtn').addEventListener('click', undo);
+    document.addEventListener('keydown', (e)=>{ if((e.ctrlKey||e.metaKey)&&e.key==='z'){ e.preventDefault(); undo(); } });
+
+    // File Upload Logic
+    const handleFile = async (file) => {
+      document.getElementById("fileErr").style.display = "none";
+      try{
+        const text = await file.text();
+        const parsed = parseXYZ(text);
+        pushUndo();
+        
+        const newId = "MY-" + Date.now().toString().slice(-4);
+        const newEntry = { id: newId, name: file.name, owner: "mine", tags: [], xyz: text };
+        BULK_DB.push(newEntry);
+        cellParams[newId] = {a:10, b:10, c:10, alpha:90, beta:90, gamma:90};
+
+        state.bulk = { id: newId, name: file.name, xyz: text };
+        state.mlOutText = "—";
+        state.viewerStatusText = "就绪";
+        document.getElementById("fileName").textContent = `已上传：${file.name}`;
+        
+        activeFilter = "mine";
+        document.querySelectorAll(".chip").forEach(c => c.classList.remove("on"));
+        document.querySelector(".chip[data-filter='mine']").classList.add("on");
+        document.getElementById("dbSearch").placeholder = "搜索：文件名称… (我的)";
+
+        updateAllUI();
+      }catch(e){ 
+        document.getElementById("fileErr").style.display = "block"; 
+      }
+    };
+    
+    document.getElementById("xyzFile").addEventListener("change", (e)=>{ if(e.target.files[0]) handleFile(e.target.files[0]); });
+    const dropZone = document.getElementById("dropZone");
+    dropZone.addEventListener("dragover", (e)=>e.preventDefault());
+    dropZone.addEventListener("drop", (e)=>{ e.preventDefault(); if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
+
+    // DB Search & Filters
+    document.getElementById("dbSearch").addEventListener("input", renderDB);
+    document.querySelectorAll(".chip").forEach(chip=>{
+      chip.addEventListener("click", ()=>{
+        document.querySelectorAll(".chip").forEach(c=>c.classList.remove("on"));
+        chip.classList.add("on");
+        activeFilter = chip.getAttribute("data-filter");
+        
+        const searchBox = document.getElementById("dbSearch");
+        if(activeFilter === "database") {
+          searchBox.placeholder = "搜索：ID / 化学式 / 元素比… (数据库)";
+        } else {
+          searchBox.placeholder = "搜索：文件名称… (我的)";
+        }
+        renderDB();
+      });
+    });
+
+    // ML Predict
+    document.getElementById("mlBtn").addEventListener("click", ()=>{
+      pushUndo();
+      const parsed = parseXYZ(state.bulk.xyz);
+      parsed.atoms.forEach(a => {
+        a.x += (Math.random() - 0.5) * 0.1;
+        a.y += (Math.random() - 0.5) * 0.1;
+        a.z += (Math.random() - 0.5) * 0.1;
+      });
+      state.bulk.xyz = toXYZ(parsed.comment, parsed.atoms);
+      
+      const E = (-150 - Math.random()*20).toFixed(3);
+      const F = (Math.random()*0.08).toFixed(3);
+      
+      state.mlOutText = `E = ${E} eV | F_max = ${F} eV/Å`;
+      state.viewerStatusText = "ML预测完成";
+      
+      document.getElementById("mlOut").textContent = state.mlOutText;
+      document.getElementById("viewerStatus").textContent = state.viewerStatusText;
+      
+      renderViewer();
+    });
+
+    // Go to Optimization
+    document.getElementById("goOptBtn").addEventListener("click", ()=>{
+      const isPredicted = document.getElementById("viewerStatus").textContent === "ML预测完成";
+      const msg = isPredicted ? "已携带【ML预测后的结构数据】进入结构优化页面。" : "已携带【当前结构数据】进入结构优化页面。";
+      alert(msg);
+    });
+  }
+</script>
+</body>
+</html>

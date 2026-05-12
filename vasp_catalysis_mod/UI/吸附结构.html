@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>吸附结构</title>
+  <style>
+    :root{
+      --bg:#f5f7fb; --card:#ffffff; --text:#1f2937; --muted:#6b7280; --line:#e5e7eb;
+      --green:#18a957; --green2:#e7f7ee; --shadow:0 8px 24px rgba(17,24,39,.08); --radius:14px;
+      --mono: ui-monospace, Menlo, Consolas, monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);font-family:var(--sans);color:var(--text)}
+    
+    .app{display:flex;height:100vh;min-height:900px}
+    .sidebar{width:270px;background:var(--card);border-right:1px solid var(--line);padding:18px 14px;flex:0 0 auto;overflow-y:auto}
+    .brand{display:flex;gap:10px;align-items:center;margin-bottom:16px}
+    .logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,var(--green),#28d17a);box-shadow:0 10px 20px rgba(24,169,87,.22)}
+    .brand .name{font-weight:900;font-size:14px}
+    .brand .sub{font-size:12px;color:var(--muted);margin-top:2px}
+    .navTitle{font-size:12px;color:var(--muted);margin:14px 10px 6px}
+    .nav a{display:flex;align-items:center;text-decoration:none;color:var(--text);padding:10px 10px;border-radius:12px;border:1px solid transparent;margin-bottom:6px;font-size:13px;cursor:pointer}
+    .nav a.active{background:var(--green2);border-color:#c8efd8;color:#0f6c39;font-weight:800}
+    
+    .main{flex:1;display:flex;flex-direction:column;min-width:0}
+    .topbar{height:62px;background:var(--card);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 18px}
+    .crumb{font-size:12px;color:var(--muted)}
+    .title{font-size:16px;font-weight:900;margin-top:2px}
+    .right{display:flex;gap:10px;align-items:center}
+    .pill{padding:8px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted)}
+
+    .btn{padding:10px 12px;border-radius:12px;border:1px solid #c8efd8;background:var(--green);color:#fff;font-weight:900;box-shadow:0 10px 18px rgba(24,169,87,.18);font-size:12px; cursor:pointer;white-space:nowrap;}
+    .btn.secondary{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn.ghost{background:#fff;color:var(--text);border-color:var(--line);box-shadow:none}
+    .btn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+    
+    .content{padding:18px; height:calc(100vh - 62px); min-height:0}
+    .grid{display:grid;grid-template-columns:360px 1fr 360px;gap:14px;height:100%;min-height:0;}
+    
+    .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-height:0;overflow:hidden;}
+    .head{padding:14px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center}
+    .head h3{margin:0;font-size:13px}
+    .body{padding:14px; overflow:auto; min-height:0; display:flex; flex-direction:column; flex:1;}
+    
+    .field{border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:10px;background:#fff; flex-shrink:0;}
+    .field label{display:block;font-size:11px;color:var(--muted);margin-bottom:6px}
+    .hint{font-size:12px;color:var(--muted);line-height:1.45;margin-top:8px;text-align:center;padding:20px 10px;}
+    
+    .row{display:flex;gap:10px;align-items:center}
+    .num{flex:1;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;outline:none;background:#fff;}
+    .num:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .tinyNum{width:64px;padding:7px 8px;border:1px solid var(--line);border-radius:12px;font-size:12px;font-weight:900;text-align:center;outline:none;background:#fff;}
+    .tinyNum:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+
+    /* 上传区域样式 */
+    .drop{border:1.5px dashed #cbd5e1;border-radius:12px;padding:12px;background:#fafcff;}
+    .dropTop{display:flex;align-items:center;justify-content:space-between;gap:10px}
+    .dropText{font-size:12px;font-weight:900}
+    .fileName{font-size:12px;color:var(--muted);margin-top:8px}
+    input[type="file"]{display:none}
+    .error{font-size:12px;color:#b91c1c;display:none;margin-top:6px}
+
+    .unitPill{padding:9px 10px;border-radius:12px;border:1px solid var(--line);background:#fff;font-size:12px;color:var(--muted);min-width:40px;text-align:center}
+
+    /* Dropdown */
+    .dd{position:relative}
+    .ddBtn{width:100%; display:flex; justify-content:space-between; align-items:center; gap:10px;padding:10px 10px; border-radius:12px; border:1px solid var(--line); background:#fff;cursor:pointer; text-align:left;}
+    .ddBtnMain{display:flex; flex-direction:column; gap:2px}
+    .ddBtnTitle{font-size:12px; font-weight:900}
+    .ddBtnSub{font-size:11px; color:var(--muted)}
+    .ddCaret{color:var(--muted); font-size:12px}
+    .ddMenu{position:absolute; left:0; right:0; top:calc(100% + 8px);background:var(--card); border:1px solid var(--line); border-radius:14px;box-shadow:var(--shadow); padding:8px; display:none; z-index:50;max-height:300px; overflow:auto;}
+    .dd.open .ddMenu{display:block}
+    .ddSearch{padding:8px; border:1px solid var(--line); border-radius:10px; margin-bottom:8px; font-size:12px; width:100%; outline:none;}
+    .ddItem{padding:10px 10px; border-radius:12px; border:1px solid transparent; cursor:pointer}
+    .ddItem:hover{background:var(--green2); border-color:#c8efd8}
+    .ddTitle{font-size:12px; font-weight:900}
+    .ddSub{font-size:11px; color:var(--muted); margin-top:3px; line-height:1.25}
+
+    /* Viewer */
+    .viewerWrap{border:1px solid #eef2f7;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,#ffffff,#f7fafc);position:relative;flex:1;min-height:380px;}
+    #viewer3d{position:absolute; inset:0; width:100%; height:100%;}
+    .viewerBadge{position:absolute;top:12px;left:12px;padding:6px 10px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12px; z-index:5;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .viewerBadge b{font-family:var(--mono);color:#0f6c39}
+    .mono{font-family:var(--mono)}
+    
+    .infoGrid{margin-top:10px;display:grid;grid-template-columns:repeat(3, 1fr);gap:10px;}
+    .mini{border:1px solid var(--line);border-radius:12px;padding:10px;background:#fff}
+    .mini .k{font-size:11px;color:var(--muted)}
+    .mini .v{font-size:12px;font-weight:900;margin-top:4px}
+
+    .viewerActions{margin-top:10px;display:flex;gap:10px;}
+    .viewerActions button{flex:1;padding:11px 12px;border-radius:12px;font-weight:900;cursor:pointer;font-size:12px;}
+    .viewerActions .ghostBtn{border:1px solid var(--line);background:#fff;color:var(--text);}
+    .viewerActions .primaryBtn{border:1px solid #c8efd8;background:var(--green);color:#fff;box-shadow:0 10px 18px rgba(24,169,87,.18);}
+    .viewerActions .primaryBtn:disabled{opacity:.45;cursor:not-allowed;box-shadow:none}
+
+    /* Right List & Filters */
+    .searchBox{width:100%;padding:10px 10px;border:1px solid var(--line);border-radius:12px;font-size:12px;outline:none;}
+    .searchBox:focus{border-color:#c8efd8; box-shadow:0 0 0 4px rgba(24,169,87,.10)}
+    .filters{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+    .chip{padding:7px 10px;border-radius:999px;border:1px solid var(--line);background:#fff;font-size:12px;cursor:pointer;user-select:none}
+    .chip.on{border-color:#c8efd8;background:var(--green2);color:#0f6c39;font-weight:900}
+    .list{margin-top:10px;display:flex;flex-direction:column;gap:8px;overflow:auto;flex:1;}
+    .item{border:1px solid var(--line);border-radius:12px;padding:10px;cursor:pointer;background:#fff; display:flex; justify-content:space-between; align-items:center;}
+    .item:hover{background:var(--green2);border-color:#c8efd8}
+    .item .t{font-weight:900;font-size:12px}
+    .item .s{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.25}
+    .item.active{background:var(--green2);border-color:#c8efd8}
+  </style>
+</head>
+
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo"></div>
+      <div>
+        <div class="name">化学计算AI平台</div>
+        <div class="sub">Catalyst Workbench</div>
+      </div>
+    </div>
+    <div class="nav">
+      <div class="navTitle">平台主页</div>
+      <div class="navTitle">智能模型</div>
+      <div class="navTitle">任务管理</div>
+      <div class="navTitle">催化剂结构</div>
+      <a href="#">晶体结构</a>
+      <a href="#">表面结构</a>
+      <a class="active" href="#">吸附结构</a>
+      <a href="#">纳米颗粒</a>
+      <div class="navTitle">催化剂性能</div>
+      <a href="#">结构优化</a>
+      <a href="#">电子结构</a>
+      <a href="#">分子动力学</a>
+      <a href="#">过渡态</a>
+      <a href="#">计算工作流</a>
+      <div class="navTitle">表征模拟</div>
+      <a href="#">XRD</a>
+      <a href="#">IR</a>
+      <a href="#">NMR模拟</a>
+      <a href="#">NMR分析</a>
+      <div class="navTitle">数据分析</div>
+      <a href="#">结构优化分析</a>
+      <a href="#">态密度分析</a>
+      <a href="#">晶体轨道分析</a>
+      <div class="navTitle">会员中心</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <div>
+        <div class="crumb">催化剂结构 / 吸附结构</div>
+        <div class="title">吸附结构</div>
+      </div>
+      <div class="right">
+        <div class="pill">🔔</div>
+        <div class="pill">A. Chen</div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="grid">
+
+        <!-- LEFT: Tools -->
+        <section class="card">
+          <div class="head"><h3>参数设置</h3></div>
+          <div class="body">
+
+            <!-- 1. 结构输入 -->
+            <div class="field">
+              <label>结构输入</label>
+              
+              <div class="dd" data-dd="slab" style="margin-bottom: 10px;">
+                <button class="ddBtn" type="button" aria-haspopup="listbox" aria-expanded="false">
+                  <div class="ddBtnMain">
+                    <div class="ddBtnTitle" id="slabTitle">SLAB-0003</div>
+                    <div class="ddBtnSub" id="slabSub">(111) / 3层 / 2×2 / 15 Å</div>
+                  </div>
+                  <div class="ddCaret">▾</div>
+                </button>
+                <div class="ddMenu" role="listbox" id="slabMenu">
+                  <div class="ddItem" onclick="document.getElementById('slabTitle').innerText='SLAB-0003'; document.getElementById('slabSub').innerText='(111) / 3层 / 2×2 / 15 Å';">
+                    <div class="ddTitle">SLAB-0003</div>
+                    <div class="ddSub">(111) / 3层 / 2×2 / 15 Å</div>
+                  </div>
+                  <div class="ddItem" onclick="document.getElementById('slabTitle').innerText='SLAB-0008'; document.getElementById('slabSub').innerText='(100) / 3层 / 3×3 / 15 Å';">
+                    <div class="ddTitle">SLAB-0008</div>
+                    <div class="ddSub">(100) / 3层 / 3×3 / 15 Å</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="drop" id="slabDropZone">
+                <div class="dropTop">
+                  <div class="dropText">上传结构文件</div>
+                  <label class="btn secondary" for="slabFile" style="padding: 6px 10px;">选择文件</label>
+                  <input id="slabFile" type="file" accept=".xyz,text/plain,.cif,.poscar,.vasp">
+                </div>
+                <div class="fileName" id="slabFileName">拖拽文件到此处</div>
+                <div id="slabFileErr" class="error">文件解析失败</div>
+              </div>
+            </div>
+
+            <!-- 2. 吸附分子输入 -->
+            <div class="field">
+              <label>吸附分子</label>
+              
+              <div class="row" style="margin-bottom: 10px;">
+                <input id="molSearch" class="num" type="text" placeholder="输入化学式 (如 CO, H2O)...">
+                <button class="btn secondary" style="padding: 10px 12px;">搜索</button>
+              </div>
+
+              <div class="drop" id="molDropZone">
+                <div class="dropTop">
+                  <div class="dropText">上传分子文件</div>
+                  <label class="btn secondary" for="molFile" style="padding: 6px 10px;">选择文件</label>
+                  <input id="molFile" type="file" accept=".xyz,.mol,.sdf,.pdb">
+                </div>
+                <div class="fileName" id="molFileName">拖拽文件到此处</div>
+                <div id="molFileErr" class="error">文件解析失败</div>
+              </div>
+            </div>
+
+            <!-- 3. 位点选择 -->
+            <div class="field">
+              <label>吸附位点</label>
+              <div class="filters" id="siteChips">
+                <div class="chip on" data-site="hollow">hollow</div>
+                <div class="chip on" data-site="bridge">bridge</div>
+                <div class="chip" data-site="ontop">ontop</div>
+              </div>
+            </div>
+
+            <!-- 4. 吸附距离 -->
+            <div class="field">
+              <label>吸附距离</label>
+              <div class="row">
+                <input id="distInput" class="num" type="number" inputmode="decimal" step="0.05" min="0.50" max="5.00" value="1.80">
+                <div class="unitPill">Å</div>
+              </div>
+              <div id="distError" class="error">请输入有效距离（0.50–5.00 Å）</div>
+            </div>
+
+            <div style="margin-top: auto; padding-top: 10px;">
+              <div class="row">
+                <button id="genAdsBtn" class="btn" style="flex:1;">生成候选 ADS</button>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- MIDDLE: Viewer -->
+        <section class="card">
+          <div class="head">
+            <h3>结构预览</h3>
+            <div style="position:relative;">
+              <button class="btn ghost" id="exportToggleBtn" type="button" style="padding:6px 10px;font-size:11px;">📥 导出结构 ▾</button>
+              <div id="exportMenu" style="display:none;position:absolute;right:0;top:calc(100% + 4px);background:var(--card);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:100;min-width:110px;">
+                <div class="ddItem" onclick="doExport('XYZ')"><div class="ddTitle">XYZ</div></div>
+                <div class="ddItem" onclick="doExport('POSCAR')"><div class="ddTitle">POSCAR</div></div>
+                <div class="ddItem" onclick="doExport('CIF')"><div class="ddTitle">CIF</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="body">
+
+            <div class="viewerWrap">
+              <div class="viewerBadge">当前：<b id="viewerLine">Pt(111) + CO (Hollow site, 1.80 Å)</b> ｜ <span class="mono" id="viewerStatus">就绪</span></div>
+              <div id="viewer3d"></div>
+            </div>
+
+            <div class="infoGrid">
+              <div class="mini"><div class="k">a, b, c (Å)</div><div class="v mono" id="abcOut">5.10, 5.10, 25.00</div></div>
+              <div class="mini"><div class="k">Atoms</div><div class="v mono" id="natOut">50</div></div>
+              <div class="mini"><div class="k">Formula</div><div class="v mono" id="formOut">Cu48C1O1</div></div>
+            </div>
+
+            <div class="mini" style="margin-top:10px;">
+              <div class="k">ML预测结果 (能量 / 最大力)</div>
+              <!-- 动态更新的 ML 结果 -->
+              <div class="v" id="mlOut" style="font-weight:900;color:var(--green);">E = -1.25 eV ｜ F_max = 0.03 eV/Å</div>
+            </div>
+
+            <div class="viewerActions">
+              <button id="mlBtn" class="ghostBtn">ML预测</button>
+              <button id="goOptBtn" class="primaryBtn">进入结构优化</button>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- RIGHT: History / DB -->
+        <section class="card">
+          <div class="head"><h3>结构库</h3></div>
+          <div class="body">
+
+            <input id="dbSearch" class="searchBox" placeholder="搜索：ID / 化学式 / 元素比… (数据库)">
+            
+            <div class="filters" id="dbFilters">
+              <div class="chip on" data-filter="database">数据库</div>
+              <div class="chip" data-filter="mine">我的</div>
+              <div class="chip" data-filter="generated" style="border-color:#c8efd8; color:#0f6c39;">生成结果</div>
+            </div>
+            
+            <div class="list" id="dbList">
+              <!-- 动态插入 -->
+            </div>
+
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+  // ============================================================
+  // Mock Database & State 
+  // (Added mlEnergy and mlForce to objects)
+  // ============================================================
+  const ADS_DB = [
+    { id: "ADS-DB-001", name: "Pt(111) + CO", owner: "database", desc: "Hollow site, 1.80 Å", mlEnergy: "-1.25", mlForce: "0.03" },
+    { id: "ADS-DB-002", name: "Pt(111) + CO", owner: "database", desc: "Bridge site, 1.85 Å", mlEnergy: null, mlForce: null },
+    { id: "ADS-DB-003", name: "Cu(100) + H2O", owner: "database", desc: "Ontop site, 2.10 Å", mlEnergy: "-0.85", mlForce: "0.12" },
+    { id: "MY-ADS-001", name: "Ni(111) + NO", owner: "mine", desc: "Hollow site, 1.75 Å", mlEnergy: null, mlForce: null }
+  ];
+
+  let activeFilter = "database";
+  let activeAdsId = "ADS-DB-001";
+
+  // ============================================================
+  // UI Logic
+  // ============================================================
+  function renderDB() {
+    const q = document.getElementById("dbSearch").value.trim().toLowerCase();
+    const list = document.getElementById("dbList");
+    list.innerHTML = "";
+
+    let items = ADS_DB.filter(e => e.owner === activeFilter);
+    if (q) {
+      items = items.filter(e => `${e.id} ${e.name} ${e.desc}`.toLowerCase().includes(q));
+    }
+
+    if (items.length === 0) {
+      list.innerHTML = `<div class="hint">无匹配的结构记录</div>`;
+      return;
+    }
+
+    items.forEach(e => {
+      const div = document.createElement("div");
+      div.className = "item" + (e.id === activeAdsId ? " active" : "");
+      
+      let actionHtml = '';
+      if (e.owner !== 'mine') {
+        actionHtml = `<button class="btn secondary add-btn" style="padding:4px 8px; font-size:11px; flex-shrink:0;" title="添加到我的">＋</button>`;
+      } else {
+        actionHtml = `<button class="btn secondary del-btn" style="padding:4px 8px; font-size:11px; color:#b91c1c; flex-shrink:0;" title="删除">×</button>`;
+      }
+
+      div.innerHTML = `
+        <div style="flex:1; min-width:0; overflow:hidden;" class="item-content">
+          <div class="t">${e.id}</div>
+          <div class="s">${e.name} (${e.desc})</div>
+        </div>
+        ${actionHtml}
+      `;
+
+      // 点击卡片主体切换预览，并动态加载该结构的 ML 预测结果
+      div.querySelector('.item-content').onclick = () => {
+        activeAdsId = e.id;
+        document.getElementById("viewerLine").textContent = `${e.name} (${e.desc})`;
+        
+        // 更新状态与 ML 数据
+        if (e.mlEnergy && e.mlForce) {
+          document.getElementById("mlOut").textContent = `E = ${e.mlEnergy} eV ｜ F_max = ${e.mlForce} eV/Å`;
+          document.getElementById("viewerStatus").textContent = "ML预测完成";
+        } else {
+          document.getElementById("mlOut").textContent = "—";
+          document.getElementById("viewerStatus").textContent = "就绪";
+        }
+        
+        renderDB(); 
+      };
+
+      // 添加到我的逻辑
+      const addBtn = div.querySelector('.add-btn');
+      if(addBtn) {
+        addBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          const newId = "MY-" + e.id;
+          if(!ADS_DB.find(x => x.id === newId)) {
+            // 复制时保留其 ML 属性
+            ADS_DB.push({...e, id: newId, owner: "mine"});
+            alert("已成功添加到【我的】结构库！");
+          } else {
+            alert("该结构已在【我的】结构库中！");
+          }
+        };
+      }
+
+      // 删除逻辑
+      const delBtn = div.querySelector('.del-btn');
+      if(delBtn) {
+        delBtn.onclick = (ev) => {
+          ev.stopPropagation();
+          if(confirm(`确定要从【我的】结构库中删除 ${e.id} 吗？`)){
+            const idx = ADS_DB.findIndex(x => x.id === e.id);
+            if(idx > -1) ADS_DB.splice(idx, 1);
+            renderDB();
+          }
+        };
+      }
+
+      list.appendChild(div);
+    });
+  }
+
+  // Filter Chips Click
+  document.querySelectorAll("#dbFilters .chip").forEach(chip => {
+    chip.addEventListener("click", (e) => {
+      document.querySelectorAll("#dbFilters .chip").forEach(c => c.classList.remove("on"));
+      e.target.classList.add("on");
+      activeFilter = e.target.getAttribute("data-filter");
+      
+      const searchBox = document.getElementById("dbSearch");
+      if(activeFilter === "database") searchBox.placeholder = "搜索：ID / 化学式… (数据库)";
+      else if(activeFilter === "mine") searchBox.placeholder = "搜索：文件名称… (我的)";
+      else searchBox.placeholder = "搜索：候选结构… (生成结果)";
+      
+      renderDB();
+    });
+  });
+
+  // Generate ADS Candidates
+  document.getElementById('genAdsBtn').addEventListener('click', () => {
+    const slabName = document.getElementById('slabTitle').innerText;
+    const molName = document.getElementById('molSearch').value || "CO";
+    const dist = document.getElementById('distInput').value;
+    
+    const baseId = "CAND-" + Math.floor(Math.random() * 10000);
+    
+    // 生成的初始候选物没有 ML 数据
+    ADS_DB.push({ id: `${baseId}-1`, name: `${slabName} + ${molName}`, owner: "generated", desc: `Hollow, ${dist} Å`, mlEnergy: null, mlForce: null });
+    ADS_DB.push({ id: `${baseId}-2`, name: `${slabName} + ${molName}`, owner: "generated", desc: `Bridge, ${dist} Å`, mlEnergy: null, mlForce: null });
+    ADS_DB.push({ id: `${baseId}-3`, name: `${slabName} + ${molName}`, owner: "generated", desc: `Ontop, ${dist} Å`, mlEnergy: null, mlForce: null });
+
+    document.querySelectorAll("#dbFilters .chip").forEach(c => c.classList.remove("on"));
+    document.querySelector(".chip[data-filter='generated']").classList.add("on");
+    activeFilter = "generated";
+    activeAdsId = `${baseId}-1`;
+    
+    document.getElementById("viewerLine").textContent = `${slabName} + ${molName} (Hollow, ${dist} Å)`;
+    document.getElementById("viewerStatus").textContent = "候选物已生成";
+    document.getElementById("mlOut").textContent = "—";
+    
+    renderDB();
+  });
+
+  // ML Predict Candidates
+  document.getElementById('mlBtn').addEventListener('click', () => {
+    const currentName = document.getElementById("viewerLine").textContent.split('(')[0].trim();
+    const baseId = "ML-" + Math.floor(Math.random() * 10000);
+    
+    // 模拟 ML 模型预测后生成的优化结构，带有特定的能量和力
+    const cand1 = { id: `${baseId}-Opt1`, name: currentName, owner: "generated", desc: `ML Opt 1`, mlEnergy: "-1.45", mlForce: "0.02" };
+    const cand2 = { id: `${baseId}-Opt2`, name: currentName, owner: "generated", desc: `ML Opt 2`, mlEnergy: "-1.38", mlForce: "0.05" };
+    
+    ADS_DB.push(cand1, cand2);
+
+    document.querySelectorAll("#dbFilters .chip").forEach(c => c.classList.remove("on"));
+    document.querySelector(".chip[data-filter='generated']").classList.add("on");
+    activeFilter = "generated";
+    activeAdsId = `${baseId}-Opt1`;
+
+    // UI 更新为第一个 ML 结果
+    document.getElementById('mlOut').textContent = `E = ${cand1.mlEnergy} eV ｜ F_max = ${cand1.mlForce} eV/Å`;
+    document.getElementById('viewerStatus').textContent = "ML预测完成";
+    document.getElementById("viewerLine").textContent = `${currentName} (${cand1.desc})`;
+    
+    renderDB();
+  });
+
+  // Search Input
+  document.getElementById("dbSearch").addEventListener("input", renderDB);
+
+  // Initial Render
+  renderDB();
+
+  // ============================================================
+  // Simple UI Interactions (Dropdowns, Exports, etc.)
+  // ============================================================
+  document.querySelectorAll('.ddBtn').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      const dd = e.currentTarget.closest('.dd');
+      const isOpen = dd.classList.contains('open');
+      document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open'));
+      dd.classList.toggle('open', !isOpen);
+    });
+  });
+
+  const exportToggleBtn = document.getElementById('exportToggleBtn');
+  const exportMenu = document.getElementById('exportMenu');
+  if(exportToggleBtn && exportMenu) {
+    exportToggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      exportMenu.style.display = exportMenu.style.display === 'none' ? 'block' : 'none';
+    });
+  }
+
+  window.addEventListener('click', (e)=>{ 
+    if(!e.target.closest('.dd')) {
+      document.querySelectorAll('.dd.open').forEach(d=>d.classList.remove('open')); 
+    }
+    if(!e.target.closest('#exportMenu') && e.target !== exportToggleBtn) {
+      if(exportMenu) exportMenu.style.display = 'none';
+    }
+  });
+
+  document.querySelectorAll('#siteChips .chip').forEach(chip=>{
+    chip.addEventListener('click', ()=>{
+      chip.classList.toggle('on');
+    });
+  });
+
+  window.doExport = function(format) {
+    alert(`已触发导出：${format}`);
+    document.getElementById('exportMenu').style.display = 'none';
+  };
+
+  // 3Dmol 渲染占位
+  (function load3Dmol(){
+    const cdn = document.createElement('script');
+    cdn.src = 'https://unpkg.com/3dmol/build/3Dmol-min.js';
+    cdn.onload = () => { 
+      const el = document.getElementById("viewer3d");
+      if(el) {
+        const viewer = $3Dmol.createViewer(el, { backgroundColor: "white" });
+        const xyz = `12\nSLAB-0003 demo\nCu 0.00 0.00 0.00\nCu 2.55 0.00 0.00\nCu 0.00 2.55 0.00\nCu 2.55 2.55 0.00\nCu 1.28 1.28 1.80\nCu 3.83 1.28 1.80\nCu 1.28 3.83 1.80\nCu 3.83 3.83 1.80\nCu 0.00 0.00 3.60\nCu 2.55 0.00 3.60\nCu 0.00 2.55 3.60\nCu 2.55 2.55 3.60\n`;
+        viewer.addModel(xyz, "xyz");
+        viewer.setStyle({}, { stick: { radius: 0.18 }, sphere: { scale: 0.25 } });
+        viewer.addSphere({ center: {x: 2.5, y: 2.5, z: 6.5}, radius: 0.35, color: "rgb(220,38,38)" });
+        viewer.zoomTo();
+        viewer.render();
+      }
+    };
+    document.head.appendChild(cdn);
+  })();
+</script>
+</body>
+</html>
